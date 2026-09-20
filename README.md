@@ -17,6 +17,12 @@ It mutes ads when detectable.
 
 Before using Kickoff, enable [chrome://flags/#enable-tab-audio-muting](chrome://flags/#enable-tab-audio-muting) in Chrome and relaunch Chrome when prompted.
 
+## Install
+
+1. Download the latest `Kickoff-<version>-universal.zip` from [GitHub Releases](https://github.com/strefethen/kickoff/releases).
+2. Unzip the download and move `Kickoff.app` to `/Applications`.
+3. Open Kickoff, choose **Open Accessibility Settings…** from its menu, then enable Kickoff under **Privacy & Security → Accessibility** so it can arrange and control Chrome.
+
 ## Build and launch
 
 ```sh
@@ -26,9 +32,7 @@ cd kickoff
 open build/Kickoff.app
 ```
 
-Kickoff needs macOS Accessibility permission to arrange and control Chrome. Choose **Open Accessibility Settings…** from Kickoff’s menu, then add and enable Kickoff under **Privacy & Security → Accessibility**.
-
-Release downloads, when published, appear on [GitHub Releases](https://github.com/strefethen/kickoff/releases). Maintainer release instructions are in [docs/releasing.md](docs/releasing.md).
+Maintainer release instructions are in [docs/releasing.md](docs/releasing.md).
 
 ## Use Kickoff
 

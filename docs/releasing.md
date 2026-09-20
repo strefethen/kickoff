@@ -14,7 +14,7 @@ Configure these repository Actions secrets:
 - `ASC_KEY_ID`: App Store Connect API key ID
 - `ASC_ISSUER_ID`: App Store Connect issuer ID
 
-The workflow signs with `Developer ID Application: Steve Trefethen (KNB9Z3H239)`. Change `CODE_SIGN_IDENTITY` in `.github/workflows/release.yml` if the repository moves to another signing team.
+The workflow signs with the `CODE_SIGN_IDENTITY` configured in `.github/workflows/release.yml` (for example, `Developer ID Application: Your Name (TEAM_ID)`). Change that value if the repository moves to another signing team.
 
 Running the **Release** workflow manually requires a three-component version such as `1.2.3`. It builds, notarizes, staples, and uploads a workflow artifact only. Pushing an existing `v<version>` tag performs the same build and creates a draft GitHub release for that tag. Publishing the draft remains a manual action.
 
@@ -25,7 +25,7 @@ Set the signing and App Store Connect values in the environment, then run:
 ```sh
 RELEASE_VERSION=1.2.3 \
 RELEASE_BUILD=123 \
-CODE_SIGN_IDENTITY='Developer ID Application: Steve Trefethen (KNB9Z3H239)' \
+CODE_SIGN_IDENTITY='Developer ID Application: Your Name (TEAM_ID)' \
 ASC_KEY_ID="$ASC_KEY_ID" \
 ASC_ISSUER_ID="$ASC_ISSUER_ID" \
 ASC_KEY_PATH="$ASC_KEY_PATH" \
