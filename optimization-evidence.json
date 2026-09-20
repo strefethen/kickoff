@@ -1,0 +1,407 @@
+{
+  "schema_version": "1.0",
+  "baseline_sha": "8195f621d6c6a8fca8c74dc129b4baa905e6b5af",
+  "changed_files": [
+    "Sources/Kickoff/Player/HuluPlayerTypes.swift",
+    "Tests/KickoffTests/AdMarkerTests.swift",
+    "Benchmarks/AdMarker/main.swift",
+    "Benchmarks/AdMarker/run.py",
+    "Benchmarks/AdMarker/compare.py",
+    "Benchmarks/AdMarker/README.md",
+    "optimization-report.md",
+    "optimization-evidence.json"
+  ],
+  "changes": [
+    {
+      "id": "change-1",
+      "files": [
+        "Sources/Kickoff/Player/HuluPlayerTypes.swift",
+        "Tests/KickoffTests/AdMarkerTests.swift",
+        "Benchmarks/AdMarker/main.swift",
+        "Benchmarks/AdMarker/run.py",
+        "Benchmarks/AdMarker/compare.py",
+        "Benchmarks/AdMarker/README.md",
+        "optimization-report.md",
+        "optimization-evidence.json"
+      ],
+      "summary": "Replace the exact case-sensitive regex with the explicitly requested anchored, case-insensitive ad-prefix search; add contract tests and reproducible performance evidence."
+    }
+  ],
+  "test_commands": [
+    {
+      "command": "swift test",
+      "exit_code": 0,
+      "summary": "76 tests passed; captures/optimization-2026-09-20/baseline-tests.log.",
+      "phase": "unchanged baseline"
+    },
+    {
+      "command": "swift test",
+      "exit_code": 0,
+      "summary": "77 tests passed. This original-grammar test was superseded by the user's new prefix requirement; retained log original-characterization-tests.log.",
+      "phase": "temporary original-contract characterization"
+    },
+    {
+      "command": "swift test",
+      "exit_code": 0,
+      "summary": "77 tests passed against the approved prefix contract, including existing monitoring, cancellation, and audio-control tests.",
+      "phase": "final candidate"
+    },
+    {
+      "command": "swift build -c release",
+      "exit_code": 0,
+      "summary": "Release build passed on Apple Swift 6.2.4, arm64 macOS."
+    },
+    {
+      "command": "python3 /private/tmp/kickoff-opt-bench/validate_outputs.py /private/tmp/kickoff-opt-bench/baseline-confirmation/signature.json /private/tmp/kickoff-opt-bench/candidate-confirmation/signature.json --output /private/tmp/kickoff-opt-bench/output-validation.json",
+      "exit_code": 0,
+      "summary": "2167 inputs checked against bounded independent oracles; 929 intentional false-to-true results, zero true-to-false; no claim of all-Unicode equivalence."
+    }
+  ],
+  "benchmark_commands": [
+    {
+      "command": "sample 84924 3 1 -file /private/tmp/kickoff-optimization-live-sample.txt",
+      "exit_code": 0,
+      "summary": "Running app was idle; separate read-only --inspect reported zero players. No live playback speedup claim."
+    },
+    {
+      "command": "python3 /private/tmp/kickoff-opt-bench/run.py --repo /Users/stevetrefethen/github/kickoff --output /private/tmp/kickoff-opt-bench/baseline --label baseline --build-only",
+      "exit_code": 0,
+      "summary": "Compile unchanged baseline before production edits; source and binary hashes retained."
+    },
+    {
+      "command": "python3 /private/tmp/kickoff-opt-bench/run.py --repo /Users/stevetrefethen/github/kickoff --output /private/tmp/kickoff-opt-bench/baseline --label baseline --existing-binary /private/tmp/kickoff-opt-bench/baseline/benchmark",
+      "exit_code": 0,
+      "summary": "Initial baseline measurement; raw samples and native matcher profile retained."
+    },
+    {
+      "command": "python3 /private/tmp/kickoff-opt-bench/run.py --repo /Users/stevetrefethen/github/kickoff --output /private/tmp/kickoff-opt-bench/candidate --label case-insensitive-prefix --existing-binary /private/tmp/kickoff-opt-bench/candidate/benchmark",
+      "exit_code": 0,
+      "summary": "Initial candidate timings; actual production source, identical harness/compiler options."
+    },
+    {
+      "command": "python3 -c 'from pathlib import Path; import shutil; base=Path(\"/private/tmp/kickoff-opt-bench\"); [( (base/(name+\"-confirmation\")).mkdir(exist_ok=True), shutil.copy2(base/name/\"build.json\",base/(name+\"-confirmation\")/\"build.json\") ) for name in [\"baseline\",\"candidate\"]]'",
+      "exit_code": 0,
+      "summary": "Preserve each original binary's metadata for the quiet confirmation; no source or binary regeneration."
+    },
+    {
+      "command": "python3 /private/tmp/kickoff-opt-bench/run.py --repo /Users/stevetrefethen/github/kickoff --output /private/tmp/kickoff-opt-bench/baseline-confirmation --label baseline-confirmation --existing-binary /private/tmp/kickoff-opt-bench/baseline/benchmark",
+      "exit_code": 0,
+      "summary": "One quiet baseline confirmation: 200 warm batch samples per workload after ten warmups; 100 fresh-process samples per cold workload; all outliers retained."
+    },
+    {
+      "command": "python3 /private/tmp/kickoff-opt-bench/run.py --repo /Users/stevetrefethen/github/kickoff --output /private/tmp/kickoff-opt-bench/candidate-confirmation --label candidate-confirmation --existing-binary /private/tmp/kickoff-opt-bench/candidate/benchmark",
+      "exit_code": 0,
+      "summary": "One quiet candidate confirmation using identical workloads and sampling protocol."
+    },
+    {
+      "command": "python3 /private/tmp/kickoff-opt-bench/compare.py /private/tmp/kickoff-opt-bench/baseline-confirmation /private/tmp/kickoff-opt-bench/candidate-confirmation --output /private/tmp/kickoff-opt-bench/comparison-confirmation.json",
+      "exit_code": 0,
+      "summary": "Compared all samples and reported every intentional output delta."
+    }
+  ],
+  "benchmarks": [
+    {
+      "name": "warm: Synthetic visible text",
+      "before": "289.90 ns +/- 19.80 ns",
+      "after": "178.88 ns +/- 4.00 ns",
+      "delta_percent": -38.29384081517768,
+      "confidence": "High",
+      "claimed_improvement": true,
+      "non_target": false,
+      "mode": "warm",
+      "before_statistics": {
+        "n": 200,
+        "mean_ns": 289.89606983858,
+        "median_ns": 286.7647058823529,
+        "stddev_ns": 19.79838281262275,
+        "p95_ns": 299.5084874770221,
+        "min_ns": 272.3101447610294,
+        "max_ns": 462.1133243336397
+      },
+      "after_statistics": {
+        "n": 200,
+        "mean_ns": 178.88373032513786,
+        "median_ns": 179.10138298483457,
+        "stddev_ns": 3.995909462441562,
+        "p95_ns": 182.80628159466912,
+        "min_ns": 170.6584903492647,
+        "max_ns": 205.53529986213235
+      }
+    },
+    {
+      "name": "warm: Exact Ad",
+      "before": "293.03 ns +/- 17.16 ns",
+      "after": "161.46 ns +/- 9.32 ns",
+      "delta_percent": -44.90141691918457,
+      "confidence": "High",
+      "claimed_improvement": true,
+      "non_target": false,
+      "mode": "warm",
+      "before_statistics": {
+        "n": 200,
+        "mean_ns": 293.0298495483398,
+        "median_ns": 290.7155456542969,
+        "stddev_ns": 17.160175859521758,
+        "p95_ns": 300.73291015625,
+        "min_ns": 276.0009765625,
+        "max_ns": 417.7703857421875
+      },
+      "after_statistics": {
+        "n": 200,
+        "mean_ns": 161.45529510498048,
+        "median_ns": 160.69537353515625,
+        "stddev_ns": 9.318325132565297,
+        "p95_ns": 166.2801513671875,
+        "min_ns": 153.03546142578125,
+        "max_ns": 279.8818359375
+      }
+    },
+    {
+      "name": "warm: Countdown text",
+      "before": "380.96 ns +/- 32.40 ns",
+      "after": "161.30 ns +/- 15.08 ns",
+      "delta_percent": -57.6586141931915,
+      "confidence": "High",
+      "claimed_improvement": true,
+      "non_target": false,
+      "mode": "warm",
+      "before_statistics": {
+        "n": 200,
+        "mean_ns": 380.9588116455078,
+        "median_ns": 375.9136199951172,
+        "stddev_ns": 32.3995149908808,
+        "p95_ns": 394.4969177246094,
+        "min_ns": 358.1631774902344,
+        "max_ns": 761.0918579101562
+      },
+      "after_statistics": {
+        "n": 200,
+        "mean_ns": 161.30324020385743,
+        "median_ns": 160.66551208496094,
+        "stddev_ns": 15.082510183705745,
+        "p95_ns": 164.7554931640625,
+        "min_ns": 153.27960205078125,
+        "max_ns": 369.4190979003906
+      }
+    },
+    {
+      "name": "warm: Ad-prefixed text",
+      "before": "351.89 ns +/- 13.95 ns",
+      "after": "209.85 ns +/- 6.16 ns",
+      "delta_percent": -40.365278982414566,
+      "confidence": "High",
+      "claimed_improvement": true,
+      "non_target": false,
+      "mode": "warm",
+      "before_statistics": {
+        "n": 200,
+        "mean_ns": 351.88950907389324,
+        "median_ns": 348.70317586263025,
+        "stddev_ns": 13.945942069699827,
+        "p95_ns": 367.84193929036456,
+        "min_ns": 331.7574462890625,
+        "max_ns": 491.1549886067708
+      },
+      "after_statistics": {
+        "n": 200,
+        "mean_ns": 209.8483270263672,
+        "median_ns": 209.76680501302081,
+        "stddev_ns": 6.159406924238294,
+        "p95_ns": 214.8106892903646,
+        "min_ns": 200.6954549153646,
+        "max_ns": 273.7130126953125
+      }
+    },
+    {
+      "name": "warm: Synthetic static-node scan",
+      "before": "9257.39 ns +/- 1219.40 ns",
+      "after": "5918.48 ns +/- 337.48 ns",
+      "delta_percent": -36.06750937141901,
+      "confidence": "Medium",
+      "claimed_improvement": true,
+      "non_target": false,
+      "mode": "warm",
+      "before_statistics": {
+        "n": 200,
+        "mean_ns": 9257.390234375,
+        "median_ns": 9146.25048828125,
+        "stddev_ns": 1219.3995947398073,
+        "p95_ns": 9520.060546875,
+        "min_ns": 8651.20458984375,
+        "max_ns": 26169.5966796875
+      },
+      "after_statistics": {
+        "n": 200,
+        "mean_ns": 5918.480144042969,
+        "median_ns": 5904.673583984375,
+        "stddev_ns": 337.476598797607,
+        "p95_ns": 6028.84912109375,
+        "min_ns": 5635.1318359375,
+        "max_ns": 10408.4677734375
+      }
+    },
+    {
+      "name": "warm: Non-target: nonstatic-node filter",
+      "before": "94.33 ns +/- 2.20 ns",
+      "after": "93.71 ns +/- 2.29 ns",
+      "delta_percent": -0.6594605087256955,
+      "confidence": "Noise",
+      "claimed_improvement": false,
+      "non_target": true,
+      "mode": "warm",
+      "before_statistics": {
+        "n": 200,
+        "mean_ns": 94.33499694824219,
+        "median_ns": 94.6273193359375,
+        "stddev_ns": 2.203125415838449,
+        "p95_ns": 97.4527587890625,
+        "min_ns": 89.7064208984375,
+        "max_ns": 103.0731201171875
+      },
+      "after_statistics": {
+        "n": 200,
+        "mean_ns": 93.71289489746094,
+        "median_ns": 93.9000244140625,
+        "stddev_ns": 2.290579055933924,
+        "p95_ns": 97.0001220703125,
+        "min_ns": 89.5538330078125,
+        "max_ns": 101.750732421875
+      }
+    },
+    {
+      "name": "cold: First call: non-ad",
+      "before": "867142.10 ns +/- 30376.87 ns",
+      "after": "29245.89 ns +/- 4069.50 ns",
+      "delta_percent": -96.6273244027709,
+      "confidence": "Medium",
+      "claimed_improvement": true,
+      "non_target": false,
+      "mode": "cold",
+      "before_statistics": {
+        "n": 100,
+        "mean_ns": 867142.1,
+        "median_ns": 862708.5,
+        "stddev_ns": 30376.866264154094,
+        "p95_ns": 921042,
+        "min_ns": 803750,
+        "max_ns": 960792
+      },
+      "after_statistics": {
+        "n": 100,
+        "mean_ns": 29245.89,
+        "median_ns": 28666,
+        "stddev_ns": 4069.496129172939,
+        "p95_ns": 35959,
+        "min_ns": 21250,
+        "max_ns": 38750
+      }
+    },
+    {
+      "name": "cold: Exact Ad",
+      "before": "871398.72 ns +/- 29288.72 ns",
+      "after": "29884.56 ns +/- 4062.24 ns",
+      "delta_percent": -96.57050678247496,
+      "confidence": "Medium",
+      "claimed_improvement": true,
+      "non_target": false,
+      "mode": "cold",
+      "before_statistics": {
+        "n": 100,
+        "mean_ns": 871398.72,
+        "median_ns": 869916.5,
+        "stddev_ns": 29288.72288689028,
+        "p95_ns": 908125,
+        "min_ns": 808333,
+        "max_ns": 950209
+      },
+      "after_statistics": {
+        "n": 100,
+        "mean_ns": 29884.56,
+        "median_ns": 29125,
+        "stddev_ns": 4062.2433801031566,
+        "p95_ns": 36000,
+        "min_ns": 22083,
+        "max_ns": 41208
+      }
+    },
+    {
+      "name": "cold: First call: countdown",
+      "before": "875167.49 ns +/- 25374.28 ns",
+      "after": "29480.38 ns +/- 4439.75 ns",
+      "delta_percent": -96.63145851087316,
+      "confidence": "Medium",
+      "claimed_improvement": true,
+      "non_target": false,
+      "mode": "cold",
+      "before_statistics": {
+        "n": 100,
+        "mean_ns": 875167.49,
+        "median_ns": 873541.5,
+        "stddev_ns": 25374.277192868078,
+        "p95_ns": 909583,
+        "min_ns": 812417,
+        "max_ns": 933458
+      },
+      "after_statistics": {
+        "n": 100,
+        "mean_ns": 29480.38,
+        "median_ns": 29208,
+        "stddev_ns": 4439.750401984237,
+        "p95_ns": 37209,
+        "min_ns": 22000,
+        "max_ns": 42791
+      }
+    }
+  ],
+  "proofs": [],
+  "unproven_changes": [
+    {
+      "change_id": "change-1",
+      "missing_contract_or_invariant": "Exact equivalence to the original matcher is intentionally false: the user replaced case-sensitive whole-label and timer-grammar matching with a case-insensitive prefix requirement.",
+      "risk": "Labels such as ad, AD, Ads, Advertisement, Ad choices and malformed countdown text now qualify inside the existing eligible player scope.",
+      "mitigation": "Explicit scope approval, anchored matching without trimming or diacritic-insensitivity, new rule tests, bounded output-delta validation, unchanged downstream control code and independent review. This is an approved behavior change, not an isomorphic result.",
+      "approval_id": "prefix-requirement"
+    }
+  ],
+  "approximate_changes": [],
+  "approvals": [
+    {
+      "id": "prefix-requirement",
+      "text": "User explicitly approved changing the matcher after the isomorphism conflict was explained: \"we don't need to be looking at the time portion. we can simply look for \"ad\" from the beginning of the text in a case insensitive way\".",
+      "scope": "Only recognition semantics; all other runtime behavior remains outside the change."
+    }
+  ],
+  "rollback_plan": "Revert this pass's single commit to restore the baseline matcher and tests; do not reset or remove unrelated changes.",
+  "contract_catalog": {
+    "precondition": "Any Swift String; production invokes the matcher only for eligible static text inside a visible player, and rechecks it before audio actions.",
+    "postcondition": "Return whether Foundation finds ad at the beginning with case-insensitive comparison; do not trim whitespace or parse trailing text. Diacritics remain significant.",
+    "side_effects": "Pure Boolean predicate; no AX calls, timers, I/O, mutable state or errors added. Changed classifications intentionally affect existing downstream policy.",
+    "invariants": "Existing player/window/tab identity checks, visibility/static-text restrictions, action ordering, cancellation and ownership are unchanged. Twenty other production files match baseline byte-for-byte.",
+    "temporal": "No polling, deadline, readback or scheduling constants changed; completion latency may improve as intended.",
+    "resources": "No cache or dependency added. No app memory/binary-size improvement claimed.",
+    "floating_point": "No floating-point arithmetic changed in production.",
+    "nondeterminism": "Predicate is deterministic; benchmark timings and live AX state are nondeterministic and are not equated to functional outputs.",
+    "complexity": "No asymptotic improvement claimed: conservatively O(n) worst-case string handling/bridging in either implementation, without a separate amortized bound."
+  },
+  "source_sha256": "a0ca712fdfdc5214cece36193c6d67b1235943efcb836184d6db3ef99c8a2f9d",
+  "review": {
+    "verdict": "PASS",
+    "reviewer": "Independent frontier reasoning agent /root/prefix_review",
+    "source_sha256": "a0ca712fdfdc5214cece36193c6d67b1235943efcb836184d6db3ef99c8a2f9d",
+    "tests_sha256": "a08d1fa245c619424cd673b137c52e1d683e49b6a5fba2c5541372d00c572bf0"
+  },
+  "evidence_directory": "captures/optimization-2026-09-20",
+  "output_signatures": {
+    "before": "ac88b263015f07831f97994bbe196f9fbdce1f6dad55e3eaaa622b92548eb18c",
+    "after": "8a46906d82328837f665591ca2cbc7c73fe411778dabbf2cbf5b87a24bd33e9f",
+    "inputs": 2167,
+    "intentional_false_to_true": 929,
+    "true_to_false": 0
+  },
+  "measurement_limits": "Synthetic microbenchmarks, not whole-app or live Hulu measurements. Warm percentiles and standard deviations describe batch-average ns/call, not individual-call tails. Cold first-call timings exclude process launch. No outliers removed.",
+  "rejected_optimizations": [
+    "Caching/skipping/reordering AX reads would change freshness/error contracts.",
+    "Original-grammar UTF8 parser and prefix prefilter were superseded by the explicit user requirement.",
+    "Audio-token parsing and traversal allocation changes left untouched: no measured whole-app impact established."
+  ]
+}

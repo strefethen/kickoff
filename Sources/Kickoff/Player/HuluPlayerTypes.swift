@@ -50,11 +50,8 @@ protocol HuluPlayerControlling: AnyObject {
 }
 
 enum AdMarker {
-    private static let expression = try! NSRegularExpression(pattern: #"^Ad(?: [0-9]+:[0-5][0-9])?$"#)
-
     static func matches(_ value: String) -> Bool {
-        let range = NSRange(value.startIndex..<value.endIndex, in: value)
-        return expression.firstMatch(in: value, range: range)?.range == range
+        value.range(of: "ad", options: [.anchored, .caseInsensitive]) != nil
     }
 
     static func isPresent(inPlayerNodes nodes: [PlayerContentNode]) -> Bool {
