@@ -1,6 +1,6 @@
 # Releasing Kickoff
 
-Release builds are universal (`arm64` and `x86_64`), use hardened runtime Developer ID signing, and retain the app's macOS 13 deployment target. The release workflow is pinned to Xcode 16.4 on the `macos-15` runner.
+Release builds are Apple Silicon-only (`arm64`), use hardened runtime Developer ID signing, and retain the app's macOS 13 deployment target. The release workflow is pinned to Xcode 16.4 on the `macos-15` runner.
 
 ## GitHub configuration
 
@@ -32,6 +32,6 @@ ASC_KEY_PATH="$ASC_KEY_PATH" \
 ./scripts/release/package.sh
 ```
 
-`ASC_KEY_PATH` points to the local App Store Connect `.p8` file. Packaging submits a temporary ZIP to Apple's notary service and requires an `Accepted` result before stapling and verification. The final files are `build/release/Kickoff-<version>-universal.zip` and its `.sha256` checksum. A failed signing, notarization, stapling, or assessment step removes those distributable files.
+`ASC_KEY_PATH` points to the local App Store Connect `.p8` file. Packaging submits a temporary ZIP to Apple's notary service and requires an `Accepted` result before stapling and verification. The final files are `build/release/Kickoff-<version>-arm64.zip` and its `.sha256` checksum. A failed signing, notarization, stapling, or assessment step removes those distributable files.
 
 For a signed app bundle without notarization or an archive, provide `RELEASE_VERSION`, `RELEASE_BUILD`, and `CODE_SIGN_IDENTITY` to `./build-app.sh --release`. The normal `./build-app.sh` command continues to create the ad-hoc signed native build at `build/Kickoff.app`.

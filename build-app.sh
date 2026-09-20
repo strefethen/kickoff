@@ -45,7 +45,6 @@ if [[ "$task_mode" == "release" ]]; then
         --configuration release
         --product Kickoff
         --arch arm64
-        --arch x86_64
     )
 else
     task_build="$task_root/build"
@@ -59,7 +58,11 @@ fi
 if [[ "$task_mode" == "release" ]]; then
     swift_bin_path="$(/usr/bin/swift build "${swift_args[@]}" --show-bin-path)"
     task_executable="$swift_bin_path/Kickoff"
-    /usr/bin/lipo "$task_executable" -verify_arch arm64 x86_64
+    executable_archs="$(/usr/bin/lipo -archs "$task_executable")"
+    if [[ "$executable_archs" != "arm64" ]]; then
+        printf 'Release executable must contain exactly arm64 (found: %s).\n' "$executable_archs" >&2
+        exit 1
+    fi
 
     staging_bundle="$task_build/.Kickoff.app.staging.$$"
     cleanup_staging() {

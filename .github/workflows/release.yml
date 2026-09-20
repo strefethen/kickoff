@@ -71,8 +71,8 @@ jobs:
         with:
           name: kickoff-release
           path: |
-            build/release/Kickoff-${{ steps.release-metadata.outputs.version }}-universal.zip
-            build/release/Kickoff-${{ steps.release-metadata.outputs.version }}-universal.zip.sha256
+            build/release/Kickoff-${{ steps.release-metadata.outputs.version }}-arm64.zip
+            build/release/Kickoff-${{ steps.release-metadata.outputs.version }}-arm64.zip.sha256
           if-no-files-found: error
 
   draft-release:
@@ -89,7 +89,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           release_version="${GITHUB_REF_NAME#v}"
-          archive="build/release/Kickoff-$release_version-universal.zip"
+          archive="build/release/Kickoff-$release_version-arm64.zip"
           checksum="$archive.sha256"
           mkdir -p build/release
           gh run download "$GITHUB_RUN_ID" --repo "github.com/$GITHUB_REPOSITORY" --name kickoff-release --dir build/release
