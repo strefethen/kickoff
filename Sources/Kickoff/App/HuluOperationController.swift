@@ -4,7 +4,7 @@ import Foundation
 final class HuluOperationController {
     private let monitor: AdMonitor
     private let operationQueue: DispatchQueue
-    private let prepareSetup: () throws -> (() throws -> Void)
+    private let prepareSetup: (ChromeSetupMode) throws -> (() throws -> Void)
 
     private(set) var isSettingUp = false
     private(set) var isQuitting = false
@@ -19,7 +19,7 @@ final class HuluOperationController {
     init(
         monitor: AdMonitor,
         operationQueue: DispatchQueue,
-        prepareSetup: @escaping () throws -> (() throws -> Void)
+        prepareSetup: @escaping (ChromeSetupMode) throws -> (() throws -> Void)
     ) {
         self.monitor = monitor
         self.operationQueue = operationQueue
@@ -65,13 +65,13 @@ final class HuluOperationController {
         monitor.start()
     }
 
-    func startSetup() {
+    func startSetup(mode: ChromeSetupMode = .split) {
         dispatchPrecondition(condition: .onQueue(.main))
         shouldStartDefaultMonitoring = false
         guard !isSettingUp else { return }
         let setup: () throws -> Void
         do {
-            setup = try prepareSetup()
+            setup = try prepareSetup(mode)
         } catch {
             let failure = String(describing: error)
             status = "Setup failed: \(failure)"

@@ -58,7 +58,7 @@ final class HuluOperationControllerTests: XCTestCase {
         let controller = HuluOperationController(
             monitor: monitor,
             operationQueue: queue,
-            prepareSetup: { {} }
+            prepareSetup: { _ in {} }
         )
 
         controller.startDefaultMonitoringIfNeeded(accessibilityTrusted: true)
@@ -78,7 +78,7 @@ final class HuluOperationControllerTests: XCTestCase {
         let controller = HuluOperationController(
             monitor: monitor,
             operationQueue: queue,
-            prepareSetup: { {} }
+            prepareSetup: { _ in {} }
         )
 
         controller.startDefaultMonitoringIfNeeded(accessibilityTrusted: false)
@@ -98,7 +98,7 @@ final class HuluOperationControllerTests: XCTestCase {
         let controller = HuluOperationController(
             monitor: monitor,
             operationQueue: queue,
-            prepareSetup: { {} }
+            prepareSetup: { _ in {} }
         )
 
         controller.startDefaultMonitoringIfNeeded(accessibilityTrusted: true)
@@ -128,7 +128,7 @@ final class HuluOperationControllerTests: XCTestCase {
         let controller = HuluOperationController(
             monitor: monitor,
             operationQueue: queue,
-            prepareSetup: { {} }
+            prepareSetup: { _ in {} }
         )
         controller.onChange = {
             if case .failed = controller.monitorStatus { failed.fulfill() }
@@ -150,7 +150,7 @@ final class HuluOperationControllerTests: XCTestCase {
         let setupController = HuluOperationController(
             monitor: setupMonitor,
             operationQueue: setupQueue,
-            prepareSetup: { {} }
+            prepareSetup: { _ in {} }
         )
         setupController.onChange = {
             if setupController.status == "Chrome setup complete" { setupFinished.fulfill() }
@@ -167,7 +167,7 @@ final class HuluOperationControllerTests: XCTestCase {
         let quitController = HuluOperationController(
             monitor: quitMonitor,
             operationQueue: quitQueue,
-            prepareSetup: { {} }
+            prepareSetup: { _ in {} }
         )
 
         quitController.stopForQuit { quitFinished.fulfill() }
@@ -187,7 +187,7 @@ final class HuluOperationControllerTests: XCTestCase {
         let controller = HuluOperationController(
             monitor: monitor,
             operationQueue: queue,
-            prepareSetup: { { setupRan.fulfill() } }
+            prepareSetup: { _ in { setupRan.fulfill() } }
         )
         var setupNotificationMonitoringStates: [Bool] = []
         controller.onChange = {
@@ -220,7 +220,7 @@ final class HuluOperationControllerTests: XCTestCase {
         let controller = HuluOperationController(
             monitor: monitor,
             operationQueue: queue,
-            prepareSetup: { { setupDidNotRun.fulfill() } }
+            prepareSetup: { _ in { setupDidNotRun.fulfill() } }
         )
         controller.startMonitoring()
         wait(for: [scanBegan], timeout: 1)
@@ -237,7 +237,7 @@ final class HuluOperationControllerTests: XCTestCase {
         let controller = HuluOperationController(
             monitor: monitor,
             operationQueue: queue,
-            prepareSetup: { {} }
+            prepareSetup: { _ in {} }
         )
 
         controller.toggleMonitoring(accessibilityTrusted: false)
@@ -271,7 +271,8 @@ final class HuluOperationControllerTests: XCTestCase {
         let controller = HuluOperationController(
             monitor: monitor,
             operationQueue: queue,
-            prepareSetup: {
+            prepareSetup: { mode in
+                XCTAssertEqual(mode, .quad)
                 let website = try preferences.currentURL()
                 capturedWebsite = website
                 return {
@@ -283,7 +284,7 @@ final class HuluOperationControllerTests: XCTestCase {
 
         controller.startMonitoring()
         wait(for: [scanBegan], timeout: 1)
-        controller.startSetup()
+        controller.startSetup(mode: .quad)
         let nextDraft = preferences.makeDraft()
         nextDraft.update("https://second.example/path")
         try nextDraft.save()

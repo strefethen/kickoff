@@ -39,6 +39,7 @@ struct KickoffMain {
               --prepare            Create the setup-owned Chrome window on the target monitor.
               --split              Create split view in the sole target-monitor Chrome window.
               --setup              Run the complete Chrome setup on the target monitor.
+              --setup-quad         Create two stacked split-view Chrome windows on the target monitor.
               --fullscreen         Enter full screen in the sole target-monitor Chrome window.
 
             Inspection commands are read-only. The menu-bar app starts Ad Muting automatically
@@ -71,18 +72,24 @@ struct KickoffMain {
                 website: .approvedDefault
             )
             output = try layout.environment()
+        case "--setup" where arguments.count == 1,
+             "--setup-quad" where arguments.count == 1:
+            _ = NSApplication.shared
+            let target = try MonitorSelection().pinTarget()
+            let website = try WebsitePreferences().currentURL()
+            let mode: ChromeSetupMode = arguments[0] == "--setup-quad" ? .quad : .split
+            try ChromeSetup(target: target, website: website).setup(mode: mode)
+            output = try ChromeLayout(target: target, website: website).environment()
         case "--prepare" where arguments.count == 1,
              "--split" where arguments.count == 1,
-             "--setup" where arguments.count == 1,
              "--fullscreen" where arguments.count == 1:
             _ = NSApplication.shared
-            let website = arguments[0] == "--setup"
-                ? try WebsitePreferences().currentURL()
-                : WebsiteURL.approvedDefault
-            let layout = try ChromeLayout(target: MonitorSelection().pinTarget(), website: website)
+            let layout = try ChromeLayout(
+                target: MonitorSelection().pinTarget(),
+                website: WebsiteURL.approvedDefault
+            )
             if arguments[0] == "--prepare" { _ = try layout.prepare() }
             if arguments[0] == "--split" { try layout.split() }
-            if arguments[0] == "--setup" { try layout.setup() }
             if arguments[0] == "--fullscreen" { try layout.enterFullScreen() }
             output = try layout.environment()
         default:

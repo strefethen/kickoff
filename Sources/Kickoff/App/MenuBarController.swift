@@ -7,7 +7,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let statusMenuItem = NSMenuItem(title: "Ready", action: nil, keyEquivalent: "")
     private let adMutingMenuItem = NSMenuItem(title: "Ad Muting", action: nil, keyEquivalent: "")
-    private let setupMenuItem = NSMenuItem(title: "Set Up Chrome", action: nil, keyEquivalent: "")
+    private let setupMenuItem = NSMenuItem(title: "Set Up Split Screen", action: nil, keyEquivalent: "")
+    private let quadSetupMenuItem = NSMenuItem(title: "Set Up Quad Screen", action: nil, keyEquivalent: "")
     private let settingsMenuItem = NSMenuItem(title: "Settings…", action: nil, keyEquivalent: ",")
     private let permissionMenuItem = NSMenuItem(title: "Open Accessibility Settings…", action: nil, keyEquivalent: "")
     private let revealMenuItem = NSMenuItem(title: "Show App in Finder", action: nil, keyEquivalent: "")
@@ -27,10 +28,11 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let controller = HuluOperationController(
             monitor: monitor,
             operationQueue: operationQueue,
-            prepareSetup: { [monitorSelection, websitePreferences] in
+            prepareSetup: { [monitorSelection, websitePreferences] mode in
                 let target = try monitorSelection.pinTarget()
                 let website = try websitePreferences.currentURL()
-                return { try ChromeLayout(target: target, website: website).setup() }
+                let setup = ChromeSetup(target: target, website: website)
+                return { try setup.setup(mode: mode) }
             }
         )
         controller.onChange = { [weak self] in
@@ -64,9 +66,11 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(monitorMenuController.item)
         configure(setupMenuItem, action: #selector(setUpChrome))
+        configure(quadSetupMenuItem, action: #selector(setUpQuadView))
         configure(permissionMenuItem, action: #selector(openAccessibilitySettings))
         configure(revealMenuItem, action: #selector(showAppInFinder))
         menu.addItem(setupMenuItem)
+        menu.addItem(quadSetupMenuItem)
         menu.addItem(permissionMenuItem)
         menu.addItem(revealMenuItem)
         permissionHint.isEnabled = false
@@ -103,8 +107,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         adMutingMenuItem.state = operationController.isMonitoring ? .on : .off
         adMutingMenuItem.isEnabled = !operationController.isSettingUp &&
             (operationController.isMonitoring || trusted)
-        setupMenuItem.title = targetTitle.map { "Set Up Chrome on \($0)" } ?? "Set Up Chrome"
+        setupMenuItem.title = targetTitle.map { "Set Up Split Screen on \($0)" } ?? "Set Up Split Screen"
         setupMenuItem.isEnabled = trusted && !operationController.isSettingUp && targetTitle != nil
+        quadSetupMenuItem.title = targetTitle.map { "Set Up Quad Screen on \($0)" } ?? "Set Up Quad Screen"
+        quadSetupMenuItem.isEnabled = trusted && !operationController.isSettingUp && targetTitle != nil
         monitorMenuController.refresh(
             snapshot: monitorSnapshot,
             isEnabled: !operationController.isSettingUp
@@ -134,7 +140,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func setUpChrome() {
         guard AXIsProcessTrusted() else { refreshMenu(); return }
-        operationController.startSetup()
+        operationController.startSetup(mode: .split)
+    }
+
+    @objc private func setUpQuadView() {
+        guard AXIsProcessTrusted() else { refreshMenu(); return }
+        operationController.startSetup(mode: .quad)
     }
 
     @objc private func openAccessibilitySettings() {

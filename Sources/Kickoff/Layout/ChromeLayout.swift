@@ -14,7 +14,7 @@ final class ChromeLayout {
     private let website: WebsiteURL
     private let now: () -> Date
     private let sleep: (TimeInterval) -> Void
-    private let fullScreenTimeout: TimeInterval
+    private let windowStateTimeout: TimeInterval
     private var ownedWindow: AXUIElement?
     private let layoutTerminals: Set<String> = [
         "AXWebArea", kAXTextFieldRole, kAXButtonRole, kAXRadioButtonRole,
@@ -28,7 +28,7 @@ final class ChromeLayout {
         chrome: ChromeLayoutAccessing? = nil,
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (TimeInterval) -> Void = Thread.sleep,
-        fullScreenTimeout: TimeInterval = 8
+        windowStateTimeout: TimeInterval = 8
     ) throws {
         self.target = target
         self.monitor = target.monitor
@@ -36,7 +36,7 @@ final class ChromeLayout {
         self.chrome = try chrome ?? ChromeAccessibilityClient()
         self.now = now
         self.sleep = sleep
-        self.fullScreenTimeout = fullScreenTimeout
+        self.windowStateTimeout = windowStateTimeout
     }
 
     func rect(_ element: AXUIElement) throws -> CGRect {
@@ -81,27 +81,15 @@ final class ChromeLayout {
         guard display.bounds.contains(try rect(element)) else {
             throw AccessibilityFailure("The setup window is no longer on \(monitor.name).")
         }
-        let nodes = try chrome.inspect(
-            element,
-            maximumNodes: 2_000,
-            maximumDepth: 50,
-            timeout: 8,
-            stopDescending: { self.layoutTerminals.contains($0.role) }
-        )
-        return ChromeWindowSnapshot(
-            element: element,
-            index: 0,
-            title: try chrome.text(element, kAXTitleAttribute),
-            nodes: nodes
-        )
+        return try snapshot(element)
     }
 
     @discardableResult
-    func prepare() throws -> ChromeWindowSnapshot {
+    func prepare(frame: CGRect? = nil) throws -> ChromeWindowSnapshot {
         _ = try target.validate()
         let before = try chrome.windows()
         try performAction(kAXPressAction, on: newWindowCommand())
-        let deadline = Date().addingTimeInterval(8)
+        let deadline = now().addingTimeInterval(8)
         repeat {
             let created = try chrome.windows().filter { candidate in
                 !before.contains(where: { CFEqual($0, candidate) })
@@ -111,13 +99,13 @@ final class ChromeLayout {
             }
             if let window = created.first {
                 ownedWindow = window
-                let current = try target.validate()
-                try applyFrame(current.visibleBounds.insetBy(dx: 24, dy: 24), to: window)
+                let requestedFrame = frame ?? target.monitor.visibleBounds.insetBy(dx: 24, dy: 24)
+                try applyNormalFrame(requestedFrame, to: window, moveBeforeResize: true)
                 log(["event": "window-on-monitor", "chromePID": chrome.pid, "display": monitor.name])
                 return try waitForWindow(seconds: 8) { self.pageURLs($0).count == 1 }
             }
-            Thread.sleep(forTimeInterval: 0.2)
-        } while Date() < deadline
+            sleep(0.2)
+        } while now() < deadline
         throw AccessibilityFailure("Chrome did not create a new window.")
     }
 
@@ -181,10 +169,7 @@ final class ChromeLayout {
     }
 
     func setup() throws {
-        try step("Create window on \(monitor.name)") { _ = try prepare() }
-        try step("Load first website page") { try browseActiveWebsite(expectedPages: 1) }
-        try step("Create split view") { try split() }
-        try step("Load second website page") { try browseActiveWebsite(expectedPages: 2) }
+        try configureSplitWindow(frame: nil)
         try step("Enter full screen") { try enterFullScreen() }
         let final = try currentTargetWindow()
         let finalURLs = pageURLs(final)
@@ -195,6 +180,127 @@ final class ChromeLayout {
             throw AccessibilityFailure(failure)
         }
         log(["event": "setup-complete", "chromePID": chrome.pid, "display": monitor.name, "urls": finalURLs])
+    }
+
+    func setupSplitWindow(frame: CGRect) throws {
+        try configureSplitWindow(frame: frame)
+    }
+
+    private func configureSplitWindow(frame: CGRect?) throws {
+        try step("Create window on \(monitor.name)") { _ = try prepare(frame: frame) }
+        try step("Load first website page") { try browseActiveWebsite(expectedPages: 1) }
+        try step("Create split view") { try split() }
+        try step("Load second website page") { try browseActiveWebsite(expectedPages: 2) }
+    }
+
+    func verifySplitWindow(frame: CGRect) throws {
+        _ = try waitForOwnedSplitWindow(frame: frame)
+    }
+
+    func measuredBrowserInsets() throws -> ChromeBrowserInsets {
+        let deadline = now().addingTimeInterval(windowStateTimeout)
+        repeat {
+            do {
+                let snapshot = try waitForOwnedSplitWindow(frame: nil)
+                let windowFrame = try rect(snapshot.element)
+                let areas = pageAreas(snapshot)
+                let pageFrames = try areas.map { try rect($0.element) }
+                if pageFrames.count == 2,
+                   pageFrames.allSatisfy({ windowFrame.insetBy(dx: -1, dy: -1).contains($0) }),
+                   abs(pageFrames[0].minY - pageFrames[1].minY) <= 1,
+                   abs(pageFrames[0].maxY - pageFrames[1].maxY) <= 1 {
+                    let top = pageFrames[0].minY - windowFrame.minY
+                    let bottom = windowFrame.maxY - pageFrames[0].maxY
+                    if top.isFinite, bottom.isFinite, top >= 0, bottom >= 0 {
+                        return ChromeBrowserInsets(top: top, bottom: bottom)
+                    }
+                }
+            } catch let failure as AccessibilityFailure where failure.axError == .invalidUIElement {
+                // Re-read this owned window while its page renderers resize.
+            }
+            // Chrome publishes the outer frame before its split viewports.
+            sleep(0.2)
+        } while now() < deadline
+        throw AccessibilityFailure("Chrome's split website viewports did not settle into one vertical frame inside the setup window.")
+    }
+
+    func placeWindow(frame: CGRect) throws {
+        guard let window = ownedWindow else {
+            throw AccessibilityFailure("Chrome window placement requires the window created by this setup session.")
+        }
+        try applyNormalFrame(frame, to: window)
+    }
+
+    func raiseWindow() throws {
+        guard let window = ownedWindow else {
+            throw AccessibilityFailure("Chrome window raising requires the window created by this setup session.")
+        }
+        _ = try target.validate()
+        guard try chrome.windows().contains(where: { CFEqual($0, window) }),
+              try chrome.advertisedActions(window).contains(kAXRaiseAction) else {
+            throw AccessibilityFailure("Chrome's setup window cannot be raised.")
+        }
+        let result = chrome.performOnce(kAXRaiseAction, on: window)
+        log(["event": kAXRaiseAction, "result": result.rawValue])
+        guard result == .success else {
+            throw AccessibilityFailure("Raising Chrome's setup window failed with AX error \(result.rawValue).", axError: result)
+        }
+
+        let deadline = now().addingTimeInterval(windowStateTimeout)
+        repeat {
+            _ = try target.validate()
+            let windows = try chrome.windows()
+            if windows.contains(where: { CFEqual($0, window) }) {
+                do {
+                    let mainWindow = try chrome.attribute(chrome.application, kAXMainWindowAttribute)
+                    let focusedWindow = try chrome.attribute(chrome.application, kAXFocusedWindowAttribute)
+                    if isElement(mainWindow, equalTo: window), isElement(focusedWindow, equalTo: window) {
+                        return
+                    }
+                } catch let failure as AccessibilityFailure where failure.axError == .invalidUIElement {
+                    // Retry the same owned window while Chrome updates focus.
+                }
+            }
+            sleep(0.2)
+        } while now() < deadline
+        throw AccessibilityFailure("Chrome did not make the raised setup window main and focused.")
+    }
+
+    private func waitForOwnedSplitWindow(frame: CGRect?) throws -> ChromeWindowSnapshot {
+        guard let window = ownedWindow else {
+            throw AccessibilityFailure("Chrome split verification requires the window created by this setup session.")
+        }
+        let deadline = now().addingTimeInterval(windowStateTimeout)
+        repeat {
+            let display = try target.validate()
+            let windows = try chrome.windows()
+            if windows.contains(where: { CFEqual($0, window) }) {
+                do {
+                    guard let isFullScreen = try chrome.attribute(window, "AXFullScreen") as? Bool else {
+                        throw AccessibilityFailure("Chrome's full-screen state is unavailable.")
+                    }
+                    let actualFrame = try rect(window)
+                    let frameMatches = frame.map { matchesFrame(actualFrame, $0) } ?? true
+                    if !isFullScreen, display.bounds.contains(actualFrame), frameMatches {
+                        let snapshot = try snapshot(window)
+                        let urls = pageURLs(snapshot)
+                        if hasSplit(snapshot), urls.count == 2,
+                           urls.allSatisfy(website.acceptsLoadedURL) {
+                            return snapshot
+                        }
+                    }
+                } catch let failure as AccessibilityFailure where failure.axError == .invalidUIElement {
+                    // Chrome may replace descendants during navigation. The
+                    // same owning window is checked again on the next read.
+                }
+            }
+            sleep(0.2)
+        } while now() < deadline
+        throw AccessibilityFailure(
+            frame.map {
+                "Chrome did not keep the setup window at \(NSStringFromRect($0)) in normal split view with two loaded website pages."
+            } ?? "Chrome did not keep the owned setup window in normal split view with two loaded website pages."
+        )
     }
 
     func environment() throws -> [String: Any] {
@@ -215,7 +321,7 @@ final class ChromeLayout {
         seconds: Double,
         until condition: (ChromeWindowSnapshot) throws -> Bool
     ) throws -> ChromeWindowSnapshot {
-        let deadline = Date().addingTimeInterval(seconds)
+        let deadline = now().addingTimeInterval(seconds)
         repeat {
             do {
                 let window = try currentTargetWindow()
@@ -224,13 +330,13 @@ final class ChromeLayout {
                 // Page descendants are replaced while loading. The owning
                 // window is checked again on the next bounded read.
             }
-            Thread.sleep(forTimeInterval: 0.2)
-        } while Date() < deadline
+            sleep(0.2)
+        } while now() < deadline
         throw AccessibilityFailure("Chrome did not finish the setup step. No action was repeated.")
     }
 
     private func waitForOwnedWindowFullScreen(_ window: AXUIElement, expected: CGRect) throws {
-        let deadline = now().addingTimeInterval(fullScreenTimeout)
+        let deadline = now().addingTimeInterval(windowStateTimeout)
         repeat {
             let display = try target.validate()
             let windows = try chrome.windows()
@@ -255,19 +361,53 @@ final class ChromeLayout {
         throw AccessibilityFailure("Chrome did not finish the setup step. No action was repeated.")
     }
 
-    private func applyFrame(_ frame: CGRect, to window: AXUIElement) throws {
-        _ = try target.validate()
+    private func applyNormalFrame(_ frame: CGRect, to window: AXUIElement, moveBeforeResize: Bool = false) throws {
+        let display = try target.validate()
+        guard display.bounds.contains(frame) else {
+            throw AccessibilityFailure("The requested window frame is outside \(monitor.name).")
+        }
         var position = frame.origin
         var size = frame.size
         guard let positionValue = AXValueCreate(.cgPoint, &position),
               let sizeValue = AXValueCreate(.cgSize, &size) else {
             throw AccessibilityFailure("Could not encode window frame.")
         }
-        try chrome.set(window, attribute: kAXPositionAttribute, value: positionValue)
-        try chrome.set(window, attribute: kAXSizeAttribute, value: sizeValue)
-        guard matchesFrame(try rect(window), frame) else {
-            throw AccessibilityFailure("Chrome did not take the requested window size.")
+        if moveBeforeResize {
+            // New windows inherit another monitor's origin. Move onto the
+            // target before expanding so macOS does not clamp the new size.
+            try chrome.set(window, attribute: kAXPositionAttribute, value: positionValue)
+            try chrome.set(window, attribute: kAXSizeAttribute, value: sizeValue)
+        } else {
+            // Shrink an already placed window before moving it down, so its
+            // old height does not cause macOS to clamp the lower-row origin.
+            try chrome.set(window, attribute: kAXSizeAttribute, value: sizeValue)
+            try chrome.set(window, attribute: kAXPositionAttribute, value: positionValue)
         }
+        try waitForOwnedWindowNormalFrame(window, expected: frame)
+    }
+
+    private func waitForOwnedWindowNormalFrame(_ window: AXUIElement, expected: CGRect) throws {
+        let deadline = now().addingTimeInterval(windowStateTimeout)
+        repeat {
+            let display = try target.validate()
+            let windows = try chrome.windows()
+            if windows.contains(where: { CFEqual($0, window) }) {
+                do {
+                    guard let isFullScreen = try chrome.attribute(window, "AXFullScreen") as? Bool else {
+                        throw AccessibilityFailure("Chrome's full-screen state is unavailable.")
+                    }
+                    let actualFrame = try rect(window)
+                    if !isFullScreen, display.bounds.contains(actualFrame), matchesFrame(actualFrame, expected) { return }
+                } catch let failure as AccessibilityFailure where failure.axError == .invalidUIElement {
+                    // The same owning window is checked again after a short
+                    // bounded delay if Chrome transiently invalidates it.
+                }
+            }
+            sleep(0.2)
+        } while now() < deadline
+        throw AccessibilityFailure(
+            "Chrome did not place the setup window at \(NSStringFromRect(expected)) in normal mode."
+        )
     }
 
     private func matchesFrame(_ actual: CGRect, _ expected: CGRect) -> Bool {
@@ -304,9 +444,13 @@ final class ChromeLayout {
     }
 
     private func pageURLs(_ window: ChromeWindowSnapshot) -> [String] {
+        pageAreas(window).compactMap(\.url)
+    }
+
+    private func pageAreas(_ window: ChromeWindowSnapshot) -> [AccessibilityNode] {
         let areas = window.nodes.filter { $0.role == "AXWebArea" }
         guard let depth = areas.map(\.depth).min() else { return [] }
-        return areas.filter { $0.depth == depth }.compactMap(\.url)
+        return areas.filter { $0.depth == depth }
     }
 
     private func submitWebsite(in window: AXUIElement, addressField: AXUIElement) throws {
@@ -365,6 +509,27 @@ final class ChromeLayout {
         return tabs.count == 2 && window.nodes.filter {
             $0.nodeDescription.hasPrefix("Split View Resize Handle")
         }.count == 1
+    }
+
+    private func snapshot(_ window: AXUIElement) throws -> ChromeWindowSnapshot {
+        let nodes = try chrome.inspect(
+            window,
+            maximumNodes: 2_000,
+            maximumDepth: 50,
+            timeout: 8,
+            stopDescending: { self.layoutTerminals.contains($0.role) }
+        )
+        return ChromeWindowSnapshot(
+            element: window,
+            index: 0,
+            title: try chrome.text(window, kAXTitleAttribute),
+            nodes: nodes
+        )
+    }
+
+    private func isElement(_ value: CFTypeRef?, equalTo expected: AXUIElement) -> Bool {
+        guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
+        return CFEqual(value, expected)
     }
 
     private func step(_ name: String, action: () throws -> Void) throws {
