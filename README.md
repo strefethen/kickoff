@@ -28,6 +28,8 @@ open build/Kickoff.app
 
 Kickoff needs macOS Accessibility permission to arrange and control Chrome. Choose **Open Accessibility Settings…** from Kickoff’s menu, then add and enable Kickoff under **Privacy & Security → Accessibility**.
 
+Release downloads, when published, appear on [GitHub Releases](https://github.com/strefethen/kickoff/releases). Maintainer release instructions are in [docs/releasing.md](docs/releasing.md).
+
 ## Use Kickoff
 
 1. Open Kickoff’s menu bar menu, then choose a display from **Monitor**.
