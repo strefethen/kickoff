@@ -81,10 +81,6 @@ struct WebsiteURL: Equatable {
         explicitPort = components.port
     }
 
-    func matchesPendingAddress(_ value: String) -> Bool {
-        value == absoluteString
-    }
-
     func acceptsLoadedURL(_ value: String) -> Bool {
         guard let loaded = try? WebsiteURL(value),
               Self.hostVariants(for: host).contains(loaded.host),

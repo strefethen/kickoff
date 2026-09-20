@@ -1,6 +1,5 @@
 import AppKit
 import ApplicationServices
-import CAXNavigation
 import Foundation
 
 /// Native AX setup. Each run owns only the new Chrome window it creates.
@@ -276,20 +275,27 @@ final class ChromeLayout {
                 throw AccessibilityFailure("Chrome did not become the foreground app. No Return was sent.")
             }
             try self.chrome.set(addressField, attribute: kAXFocusedAttribute, value: kCFBooleanTrue)
-            try self.chrome.set(addressField, attribute: kAXValueAttribute, value: self.website.absoluteString as CFString)
-            guard try self.chrome.windows().contains(where: { CFEqual($0, window) }),
-                  try self.target.validate().bounds.contains(self.rect(window)),
-                  let focus = try self.chrome.attribute(self.chrome.application, kAXFocusedUIElementAttribute),
-                  CFEqual(focus, addressField),
-                  let focusedWindow = try self.chrome.attribute(self.chrome.application, kAXFocusedWindowAttribute),
-                  CFEqual(focusedWindow, window),
-                  self.website.matchesPendingAddress(try self.chrome.text(addressField, kAXValueAttribute)),
-                  try self.chrome.attribute(self.chrome.application, kAXFrontmostAttribute) as? Bool == true,
-                  NSWorkspace.shared.frontmostApplication?.processIdentifier == self.chrome.pid else {
-                throw AccessibilityFailure("The foreground website address field changed. No Return was sent.")
-            }
-            let result = HuluAXReturnToFrontmost()
-            self.log(["event": "submit-website", "api": "AXUIElementPostKeyboardEvent", "result": result.rawValue])
+            let entry = ChromeAddressEntry(
+                chrome: self.chrome,
+                addressField: addressField,
+                expected: self.website.absoluteString,
+                validateRecipient: {
+                    guard try self.chrome.windows().contains(where: { CFEqual($0, window) }),
+                          try self.target.validate().bounds.contains(self.rect(window)),
+                          let focus = try self.chrome.attribute(self.chrome.application, kAXFocusedUIElementAttribute),
+                          CFEqual(focus, addressField),
+                          let focusedWindow = try self.chrome.attribute(self.chrome.application, kAXFocusedWindowAttribute),
+                          CFEqual(focusedWindow, window),
+                          try self.chrome.attribute(self.chrome.application, kAXFrontmostAttribute) as? Bool == true,
+                          NSWorkspace.shared.frontmostApplication?.processIdentifier == self.chrome.pid else {
+                        throw AccessibilityFailure("The foreground website address field changed; submission stopped.")
+                    }
+                },
+                logKeyResult: { event, result in
+                    self.log(["event": event, "api": "AXUIElementPostKeyboardEvent", "result": result.rawValue])
+                }
+            )
+            try entry.submit()
         }
         if Thread.isMainThread { try submit() }
         else { try DispatchQueue.main.sync(execute: submit) }

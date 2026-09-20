@@ -25,9 +25,7 @@ final class WebsitePreferencesTests: XCTestCase {
     func testPathsQueriesAndFragmentsRemainPartOfTheConfiguredAddress() throws {
         let website = try WebsiteURL("https://example.com/Watch/One?Team=A%2FB#Kickoff")
 
-        XCTAssertTrue(website.matchesPendingAddress("https://example.com/Watch/One?Team=A%2FB#Kickoff"))
-        XCTAssertFalse(website.matchesPendingAddress("https://example.com/Watch/Two?Team=A%2FB#Kickoff"))
-        XCTAssertFalse(website.matchesPendingAddress("https://example.com/Watch/One?Team=A%2FB"))
+        XCTAssertEqual(website.absoluteString, "https://example.com/Watch/One?Team=A%2FB#Kickoff")
     }
 
     func testInvalidEmptyMalformedAndUnsupportedValuesAreRejected() {
