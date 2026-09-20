@@ -2,12 +2,19 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+protocol ChromeLayoutAccessing: ChromeAccessibilityAccessing, ChromeAddressFieldAccessing {}
+
+extension ChromeAccessibilityClient: ChromeLayoutAccessing {}
+
 /// Native AX setup. Each run owns only the new Chrome window it creates.
 final class ChromeLayout {
-    let chrome: ChromeAccessibilityClient
+    let chrome: ChromeLayoutAccessing
     let monitor: Monitor
     private let target: MonitorTarget
     private let website: WebsiteURL
+    private let now: () -> Date
+    private let sleep: (TimeInterval) -> Void
+    private let fullScreenTimeout: TimeInterval
     private var ownedWindow: AXUIElement?
     private let layoutTerminals: Set<String> = [
         "AXWebArea", kAXTextFieldRole, kAXButtonRole, kAXRadioButtonRole,
@@ -15,11 +22,21 @@ final class ChromeLayout {
         kAXPopUpButtonRole, kAXMenuItemRole,
     ]
 
-    init(target: MonitorTarget, website: WebsiteURL, chrome: ChromeAccessibilityClient? = nil) throws {
+    init(
+        target: MonitorTarget,
+        website: WebsiteURL,
+        chrome: ChromeLayoutAccessing? = nil,
+        now: @escaping () -> Date = Date.init,
+        sleep: @escaping (TimeInterval) -> Void = Thread.sleep,
+        fullScreenTimeout: TimeInterval = 8
+    ) throws {
         self.target = target
         self.monitor = target.monitor
         self.website = website
         self.chrome = try chrome ?? ChromeAccessibilityClient()
+        self.now = now
+        self.sleep = sleep
+        self.fullScreenTimeout = fullScreenTimeout
     }
 
     func rect(_ element: AXUIElement) throws -> CGRect {
@@ -64,7 +81,13 @@ final class ChromeLayout {
         guard display.bounds.contains(try rect(element)) else {
             throw AccessibilityFailure("The setup window is no longer on \(monitor.name).")
         }
-        let nodes = try chrome.inspect(element, stopDescending: { self.layoutTerminals.contains($0.role) })
+        let nodes = try chrome.inspect(
+            element,
+            maximumNodes: 2_000,
+            maximumDepth: 50,
+            timeout: 8,
+            stopDescending: { self.layoutTerminals.contains($0.role) }
+        )
         return ChromeWindowSnapshot(
             element: element,
             index: 0,
@@ -153,10 +176,7 @@ final class ChromeLayout {
             }
             try performAction(kAXPressAction, on: rawButton as! AXUIElement)
         }
-        _ = try waitForWindow(seconds: 8) {
-            try self.chrome.attribute($0.element, "AXFullScreen") as? Bool == true &&
-                self.matchesFrame(try self.rect($0.element), expected)
-        }
+        try waitForOwnedWindowFullScreen(window.element, expected: expected)
         log(["event": "full-screen-verified", "display": monitor.name, "chromePID": chrome.pid])
     }
 
@@ -206,6 +226,32 @@ final class ChromeLayout {
             }
             Thread.sleep(forTimeInterval: 0.2)
         } while Date() < deadline
+        throw AccessibilityFailure("Chrome did not finish the setup step. No action was repeated.")
+    }
+
+    private func waitForOwnedWindowFullScreen(_ window: AXUIElement, expected: CGRect) throws {
+        let deadline = now().addingTimeInterval(fullScreenTimeout)
+        repeat {
+            let display = try target.validate()
+            let windows = try chrome.windows()
+            let isOwnedWindowListed = windows.contains { CFEqual($0, window) }
+            if isOwnedWindowListed {
+                do {
+                    guard let isFullScreen = try chrome.attribute(window, "AXFullScreen") as? Bool else {
+                        throw AccessibilityFailure("Chrome's full-screen state is unavailable.")
+                    }
+                    let frame = try rect(window)
+                    guard display.bounds.contains(frame) else {
+                        throw AccessibilityFailure("The setup window is no longer on \(monitor.name).")
+                    }
+                    if isFullScreen, matchesFrame(frame, expected) { return }
+                } catch let failure as AccessibilityFailure where failure.axError == .invalidUIElement {
+                    // Chrome may briefly invalidate the listed element while
+                    // moving that same window into its full-screen space.
+                }
+            }
+            sleep(0.2)
+        } while now() < deadline
         throw AccessibilityFailure("Chrome did not finish the setup step. No action was repeated.")
     }
 
