@@ -170,4 +170,21 @@ final class PlayerAdDetectionTests: XCTestCase {
         }
     }
 
+    func testVideoBranchAncestorsAreRetainedSeparatelyFromOverlayBranch() throws {
+        for identifier in ["core-video-shaka", "core-video-tape"] {
+            let chrome = FakeChrome()
+            chrome.providers[0] = .peacock
+            chrome.videoIdentifier = identifier
+            let evidence = try PlayerAdDetection.peacock.read(in: chrome.web1, chrome: chrome)
+            XCTAssertEqual(evidence.requiredAnchorAncestors.count, 3)
+            XCTAssertTrue(CFEqual(evidence.requiredAnchorAncestors[0], chrome.root1))
+            XCTAssertTrue(CFEqual(evidence.requiredAnchorAncestors[1], chrome.videoAncestor1))
+            XCTAssertTrue(CFEqual(evidence.requiredAnchorAncestors[2], chrome.videoAncestor2))
+            XCTAssertFalse(evidence.markers[0].ancestors.contains { CFEqual($0, chrome.videoAncestor1) || CFEqual($0, chrome.videoAncestor2) })
+            XCTAssertTrue(try PlayerAdDetection.peacock.markerIsStillPresent(evidence, chrome: chrome))
+            chrome.videoAncestorHidden[1] = true
+            XCTAssertFalse(try PlayerAdDetection.peacock.markerIsStillPresent(evidence, chrome: chrome))
+        }
+    }
+
 }

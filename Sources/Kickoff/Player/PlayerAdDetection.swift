@@ -53,6 +53,7 @@ enum PlayerAdDetection: Equatable {
         let root: AXUIElement
         let requiredAnchor: AXUIElement?
         let requiredAnchorIdentifier: String?
+        let requiredAnchorAncestors: [AXUIElement]
         let markers: [Marker]
     }
 
@@ -78,15 +79,20 @@ enum PlayerAdDetection: Equatable {
         let anchor = try requiredAnchor(in: nodes)
         var lineage: [AccessibilityNode] = []
         var markers: [Marker] = []
+        var anchorAncestors: [AXUIElement] = []
         for node in nodes {
             while let last = lineage.last, last.depth >= node.depth { lineage.removeLast() }
+            if let anchor, CFEqual(node.element, anchor.element) {
+                anchorAncestors = lineage.map(\.element)
+            }
             if isMarker(node) {
                 markers.append(Marker(element: node.element, ancestors: lineage.map(\.element)))
             }
             lineage.append(node)
         }
         return Evidence(root: root.element, requiredAnchor: anchor?.element,
-                        requiredAnchorIdentifier: anchor?.domIdentifier, markers: markers)
+                        requiredAnchorIdentifier: anchor?.domIdentifier,
+                        requiredAnchorAncestors: anchorAncestors, markers: markers)
     }
 
     private func requiredAnchor(in nodes: [AccessibilityNode]) throws -> AccessibilityNode? {
@@ -105,6 +111,9 @@ enum PlayerAdDetection: Equatable {
     func markerIsStillPresent(_ evidence: Evidence, chrome: ChromeAccessibilityAccessing) throws -> Bool {
         guard try chrome.attribute(evidence.root, "AXHidden") as? Bool != true else { return false }
         if let anchor = evidence.requiredAnchor {
+            for ancestor in evidence.requiredAnchorAncestors {
+                if try chrome.attribute(ancestor, "AXHidden") as? Bool == true { return false }
+            }
             guard try chrome.attribute(anchor, "AXHidden") as? Bool != true,
                   try chrome.text(anchor, "AXDOMIdentifier") == evidence.requiredAnchorIdentifier else { return false }
         }

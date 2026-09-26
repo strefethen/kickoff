@@ -20,6 +20,8 @@ final class HuluPlayerPrepressTests: XCTestCase {
         let video1 = AXUIElementCreateApplication(411)
         let video2 = AXUIElementCreateApplication(412)
         let ancestor1 = AXUIElementCreateApplication(421)
+        let videoAncestor1 = AXUIElementCreateApplication(431)
+        let videoAncestor2 = AXUIElementCreateApplication(432)
         let tab1 = AXUIElementCreateApplication(501)
         let tab2 = AXUIElementCreateApplication(502)
         let replacementTab1 = AXUIElementCreateApplication(503)
@@ -38,6 +40,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
         var videoIdentifier = "core-video-shaka"
         var videoCount = 1
         var videoHidden = false
+        var videoAncestorHidden = [false, false]
         var areaNodesOverride: [AccessibilityNode]?
         var contentNodesOverride: [AccessibilityNode]?
         var onClassRead: (() -> Void)?
@@ -106,6 +109,9 @@ final class HuluPlayerPrepressTests: XCTestCase {
             }
             if index(element, in: [video1, video2]) != nil {
                 if name == "AXHidden" { return videoHidden as CFBoolean }
+            }
+            if let index = index(element, in: [videoAncestor1, videoAncestor2]), name == "AXHidden" {
+                return videoAncestorHidden[index] as CFBoolean
             }
             if CFEqual(element, ancestor1), name == "AXHidden" { return ancestorHidden as CFBoolean }
             if index(element, in: roots) != nil, name == "AXHidden" { return rootHidden as CFBoolean }
@@ -197,7 +203,9 @@ final class HuluPlayerPrepressTests: XCTestCase {
                 if let contentNodesOverride { return contentNodesOverride }
                 var result = [node(roots[index], role: kAXGroupRole, domIdentifier: providers[index].rootIdentifier, hidden: rootHidden)]
                 if providers[index] == .peacock {
-                    if videoCount > 0 { result.append(node(index == 0 ? video1 : video2, role: kAXGroupRole, domIdentifier: videoIdentifier, depth: 1, hidden: videoHidden)) }
+                    result.append(node(videoAncestor1, role: kAXGroupRole, depth: 1, hidden: videoAncestorHidden[0]))
+                    result.append(node(videoAncestor2, role: kAXGroupRole, depth: 2, hidden: videoAncestorHidden.contains(true)))
+                    if videoCount > 0 { result.append(node(index == 0 ? video1 : video2, role: kAXGroupRole, domIdentifier: videoIdentifier, depth: 3, hidden: videoHidden || videoAncestorHidden.contains(true))) }
                     if videoCount > 1 { result.append(node(AXUIElementCreateApplication(413), role: kAXGroupRole, domIdentifier: "core-video-shaka", depth: 1)) }
                     result.append(node(ancestor1, role: kAXGroupRole, depth: 1, hidden: ancestorHidden))
                     result.append(node(markers[index], role: kAXGroupRole, depth: 2, hidden: markerHidden || ancestorHidden, classes: try domClassList(markers[index])))
@@ -701,6 +709,28 @@ final class HuluPlayerPrepressTests: XCTestCase {
         XCTAssertEqual(try client.unmuteIfAdMarkerAbsent(player.identity, expectedPlayers: [player.identity], isCancelled: { false }), .unmutedAndVerified)
         XCTAssertEqual(chrome.presses, 1)
         XCTAssertEqual(chrome.audioState[0], .playing)
+    }
+
+    func testPeacockVideoAncestorHidingDuringPreparationPreventsPressWhileVisibleVideoMutes() throws {
+        for identifier in ["core-video-shaka", "core-video-tape"] {
+            for hiddenAncestor in [nil, 0, 1] as [Int?] {
+                let chrome = FakeChrome()
+                chrome.providers[0] = .peacock
+                chrome.videoIdentifier = identifier
+                let client = ChromePlayerClient(chrome: chrome)
+                let player = try XCTUnwrap(client.discoverPlayers().first)
+                chrome.onAdvertisedActions = {
+                    if let hiddenAncestor { chrome.videoAncestorHidden[hiddenAncestor] = true }
+                    chrome.onClassRead = { chrome.rejectWindowTraversal = true }
+                }
+                let outcome = try client.muteIfCurrentlyMarkedAd(player.identity, expectedPlayers: [player.identity], isCancelled: { false })
+                XCTAssertEqual(outcome, hiddenAncestor == nil ? .mutedAndVerified : .markerDisappeared)
+                XCTAssertEqual(chrome.presses, hiddenAncestor == nil ? 1 : 0)
+                XCTAssertFalse(chrome.videoHidden)
+                XCTAssertFalse(chrome.ancestorHidden)
+                XCTAssertTrue(chrome.markerPresent[0])
+            }
+        }
     }
 
 }
