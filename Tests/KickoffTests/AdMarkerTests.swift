@@ -36,10 +36,10 @@ final class AdMarkerTests: XCTestCase {
     }
 
     func testHuluWatchURLRequiresExactHostAndWatchPath() {
-        XCTAssertTrue(HuluPlayerClient.isHuluWatchURL("https://www.hulu.com/watch/abc"))
-        XCTAssertTrue(HuluPlayerClient.isHuluWatchURL("https://hulu.com/watch/abc"))
-        XCTAssertFalse(HuluPlayerClient.isHuluWatchURL("https://example.com/watch/abc"))
-        XCTAssertFalse(HuluPlayerClient.isHuluWatchURL("https://www.hulu.com/live"))
-        XCTAssertFalse(HuluPlayerClient.isHuluWatchURL("http://www.hulu.com/watch/abc"))
+        XCTAssertEqual(PlayerAdDetection.provider(for: "https://www.hulu.com/watch/abc"), .hulu)
+        XCTAssertEqual(PlayerAdDetection.provider(for: "https://hulu.com/watch/abc"), .hulu)
+        XCTAssertNil(PlayerAdDetection.provider(for: "https://example.com/watch/abc"))
+        XCTAssertNil(PlayerAdDetection.provider(for: "https://www.hulu.com/live"))
+        XCTAssertNil(PlayerAdDetection.provider(for: "http://www.hulu.com/watch/abc"))
     }
 }

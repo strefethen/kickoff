@@ -44,7 +44,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     harness = pathlib.Path(__file__).resolve().with_name("main.swift")
     sources = [
-        args.repo / "Sources/Kickoff/Player/HuluPlayerTypes.swift",
+        args.repo / "Sources/Kickoff/Player/PlayerTypes.swift",
         args.repo / "Sources/Kickoff/Accessibility/AccessibilityTypes.swift",
         harness,
     ]

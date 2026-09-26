@@ -20,8 +20,19 @@ protocol ChromeAccessibilityAccessing: AnyObject {
     func performOnce(_ action: String, on element: AXUIElement) -> AXError
 }
 
+extension ChromeAccessibilityAccessing {
+    /// Unsupported/no-value is a node with no classes; actual AX failures propagate.
+    func domClassList(_ element: AXUIElement) throws -> [String] {
+        guard let raw = try attribute(element, "AXDOMClassList") else { return [] }
+        guard let classes = raw as? [String] else {
+            throw AccessibilityFailure("AXDOMClassList did not expose a complete string list.")
+        }
+        return classes
+    }
+}
+
 /// Owns Chrome process binding plus bounded, generic AX reads and actions.
-/// Hulu player semantics live in `HuluPlayerClient`.
+/// Provider semantics live in `PlayerAdDetection`.
 final class ChromeAccessibilityClient: ChromeAccessibilityAccessing {
     let pid: pid_t
     let application: AXUIElement
@@ -109,7 +120,8 @@ final class ChromeAccessibilityClient: ChromeAccessibilityAccessing {
                 url: url,
                 domIdentifier: try text(element, "AXDOMIdentifier"),
                 hidden: hidden,
-                depth: depth
+                depth: depth,
+                domClassList: try domClassList(element)
             )
             nodes.append(node)
             if stopDescending(node) { continue }

@@ -2,9 +2,9 @@ import Foundation
 import XCTest
 @testable import Kickoff
 
-private final class FakePlayerClient: HuluPlayerControlling {
-    var players: [HuluPlayerState]
-    var discoveries: [[HuluPlayerState]] = []
+private final class FakePlayerClient: PlayerControlling {
+    var players: [PlayerState]
+    var discoveries: [[PlayerState]] = []
     var discoveryErrors: [Int: Error] = [:]
     var outcomes: [UUID: Result<MuteMarkedAdOutcome, Error>] = [:]
     var discoverStarted: (() -> Void)?
@@ -15,13 +15,13 @@ private final class FakePlayerClient: HuluPlayerControlling {
     private(set) var discoveryCount = 0
     var unmuteOutcomes: [UUID: Result<UnmuteAfterAdOutcome, Error>] = [:]
 
-    init(players: [HuluPlayerState]) {
+    init(players: [PlayerState]) {
         self.players = players
     }
 
     func unmuteIfAdMarkerAbsent(
-        _ player: HuluPlayerIdentity,
-        expectedPlayers: [HuluPlayerIdentity],
+        _ player: PlayerIdentity,
+        expectedPlayers: [PlayerIdentity],
         isCancelled: () -> Bool
     ) throws -> UnmuteAfterAdOutcome {
         if isCancelled() { throw MonitoringCancelled() }
@@ -31,7 +31,7 @@ private final class FakePlayerClient: HuluPlayerControlling {
         return try unmuteOutcomes[player.token, default: .success(.unmutedAndVerified)].get()
     }
 
-    func discoverPlayers() throws -> [HuluPlayerState] {
+    func discoverPlayers() throws -> [PlayerState] {
         discoverStarted?()
         discoverGate?.wait()
         lock.lock()
@@ -43,8 +43,8 @@ private final class FakePlayerClient: HuluPlayerControlling {
     }
 
     func muteIfCurrentlyMarkedAd(
-        _ player: HuluPlayerIdentity,
-        expectedPlayers: [HuluPlayerIdentity],
+        _ player: PlayerIdentity,
+        expectedPlayers: [PlayerIdentity],
         isCancelled: () -> Bool
     ) throws -> MuteMarkedAdOutcome {
         if isCancelled() { throw MonitoringCancelled() }
@@ -70,9 +70,9 @@ private final class FakePlayerClient: HuluPlayerControlling {
 private enum FakeFailure: Error { case mutationOrReadback }
 
 final class AdMonitorTests: XCTestCase {
-    private func player(_ url: String, marked: Bool, muted: Bool = false) -> HuluPlayerState {
-        HuluPlayerState(
-            identity: HuluPlayerIdentity(token: UUID(), url: url),
+    private func player(_ url: String, marked: Bool, muted: Bool = false) -> PlayerState {
+        PlayerState(
+            identity: PlayerIdentity(token: UUID(), url: url),
             windowIndex: 0,
             muted: muted,
             audioDescription: muted ? "Chrome tab audio muted" : "Chrome tab audio playing",
@@ -185,9 +185,9 @@ final class AdMonitorTests: XCTestCase {
     }
 
     func testOwnedMuteRestoresAfterTwoCompleteAbsenceScans() {
-        let identity = HuluPlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/owned")
-        let ad = HuluPlayerState(identity: identity, windowIndex: 0, muted: false, audioDescription: "playing", hasAdMarker: true)
-        let absentMuted = HuluPlayerState(identity: identity, windowIndex: 0, muted: true, audioDescription: "muted", hasAdMarker: false)
+        let identity = PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/owned")
+        let ad = PlayerState(identity: identity, windowIndex: 0, muted: false, audioDescription: "playing", hasAdMarker: true)
+        let absentMuted = PlayerState(identity: identity, windowIndex: 0, muted: true, audioDescription: "muted", hasAdMarker: false)
         let fake = FakePlayerClient(players: [ad])
         fake.discoveries = [[ad], [absentMuted], [absentMuted]]
         let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01) { fake }
@@ -232,9 +232,9 @@ final class AdMonitorTests: XCTestCase {
     }
 
     func testStopRestartDiscardsOwnedMuteWithoutCleanupUnmute() {
-        let identity = HuluPlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/owned")
-        let ad = HuluPlayerState(identity: identity, windowIndex: 0, muted: false, audioDescription: "playing", hasAdMarker: true)
-        let absentMuted = HuluPlayerState(identity: identity, windowIndex: 0, muted: true, audioDescription: "muted", hasAdMarker: false)
+        let identity = PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/owned")
+        let ad = PlayerState(identity: identity, windowIndex: 0, muted: false, audioDescription: "playing", hasAdMarker: true)
+        let absentMuted = PlayerState(identity: identity, windowIndex: 0, muted: true, audioDescription: "muted", hasAdMarker: false)
         let first = FakePlayerClient(players: [ad])
         let second = FakePlayerClient(players: [absentMuted])
         let lock = NSLock()
@@ -266,9 +266,9 @@ final class AdMonitorTests: XCTestCase {
     }
 
     func testErrorDiscardsOwnedMuteBeforeFreshRun() {
-        let identity = HuluPlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/owned")
-        let ad = HuluPlayerState(identity: identity, windowIndex: 0, muted: false, audioDescription: "playing", hasAdMarker: true)
-        let absentMuted = HuluPlayerState(identity: identity, windowIndex: 0, muted: true, audioDescription: "muted", hasAdMarker: false)
+        let identity = PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/owned")
+        let ad = PlayerState(identity: identity, windowIndex: 0, muted: false, audioDescription: "playing", hasAdMarker: true)
+        let absentMuted = PlayerState(identity: identity, windowIndex: 0, muted: true, audioDescription: "muted", hasAdMarker: false)
         let failedRun = FakePlayerClient(players: [ad])
         failedRun.discoveryErrors[1] = FakeFailure.mutationOrReadback
         let freshRun = FakePlayerClient(players: [absentMuted])

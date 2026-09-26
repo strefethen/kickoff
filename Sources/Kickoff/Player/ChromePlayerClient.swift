@@ -2,20 +2,20 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-/// Owns Hulu watch-player discovery and exact `__player__` Ad-marker checks.
+/// Owns supported Chrome player discovery and exact provider-scoped evidence.
 /// ChromeTabAudioClient exclusively owns browser tab audio mutation/readback.
-final class HuluPlayerClient: HuluPlayerControlling {
+final class ChromePlayerClient: PlayerControlling {
     private struct BoundPlayer {
-        let identity: HuluPlayerIdentity
+        let identity: PlayerIdentity
         let area: ChromeWatchArea
         let audio: ChromeTabAudioBinding
     }
 
     private struct LivePlayer {
         let bound: BoundPlayer
-        let playerRoot: AXUIElement
-        let adMarkers: [AXUIElement]
-        var hasAdMarker: Bool { !adMarkers.isEmpty }
+        let provider: PlayerAdDetection
+        let evidence: PlayerAdDetection.Evidence
+        var hasAdMarker: Bool { !evidence.markers.isEmpty }
     }
 
     private let chrome: ChromeAccessibilityAccessing
@@ -29,21 +29,21 @@ final class HuluPlayerClient: HuluPlayerControlling {
 
     convenience init() throws { try self.init(chrome: ChromeAccessibilityClient()) }
 
-    func discoverPlayers() throws -> [HuluPlayerState] {
+    func discoverPlayers() throws -> [PlayerState] {
         try retryInvalidRead {
             let areas = try currentWatchAreas()
             let audioBindings = try tabAudio.bind(areas)
             guard audioBindings.count == areas.count else {
-                throw AccessibilityFailure("Chrome did not produce one native tab-audio binding per Hulu watch area.")
+                throw AccessibilityFailure("Chrome did not produce one native tab-audio binding per supported watch area.")
             }
             var next: [UUID: BoundPlayer] = [:]
-            var result: [HuluPlayerState] = []
+            var result: [PlayerState] = []
             for area in areas {
                 guard let audio = uniqueAudioBinding(for: area, in: audioBindings) else {
-                    throw AccessibilityFailure("A Hulu watch area did not map uniquely to a native Chrome tab.")
+                    throw AccessibilityFailure("A supported watch area did not map uniquely to a native Chrome tab.")
                 }
                 let identity = stableIdentity(for: area, audio: audio) ??
-                    HuluPlayerIdentity(token: UUID(), url: area.url)
+                    PlayerIdentity(token: UUID(), url: area.url)
                 let bound = BoundPlayer(identity: identity, area: area, audio: audio)
                 let live = try readPlayer(bound)
                 next[identity.token] = bound
@@ -55,8 +55,8 @@ final class HuluPlayerClient: HuluPlayerControlling {
     }
 
     func unmuteIfAdMarkerAbsent(
-        _ player: HuluPlayerIdentity,
-        expectedPlayers: [HuluPlayerIdentity],
+        _ player: PlayerIdentity,
+        expectedPlayers: [PlayerIdentity],
         isCancelled: () -> Bool
     ) throws -> UnmuteAfterAdOutcome {
         if isCancelled() { throw MonitoringCancelled() }
@@ -82,8 +82,8 @@ final class HuluPlayerClient: HuluPlayerControlling {
     }
 
     func muteIfCurrentlyMarkedAd(
-        _ player: HuluPlayerIdentity,
-        expectedPlayers: [HuluPlayerIdentity],
+        _ player: PlayerIdentity,
+        expectedPlayers: [PlayerIdentity],
         isCancelled: () -> Bool
     ) throws -> MuteMarkedAdOutcome {
         if isCancelled() { throw MonitoringCancelled() }
@@ -117,7 +117,7 @@ final class HuluPlayerClient: HuluPlayerControlling {
               let targetBinding = bindings[target.identity.token],
               let sourceBinding = bindings[source.identity.token],
               !CFEqual(targetBinding.area.window, sourceBinding.area.window) else {
-            throw AccessibilityFailure("Expected exactly two separate Hulu player windows and one matching target watch URL.")
+            throw AccessibilityFailure("Expected exactly two separate Chrome player windows and one matching target watch URL.")
         }
 
         var actions: [[String: Any]] = []
@@ -153,9 +153,9 @@ final class HuluPlayerClient: HuluPlayerControlling {
 
     private func setMuted(
         _ desired: Bool,
-        for identity: HuluPlayerIdentity,
-        expectedPlayers: [HuluPlayerIdentity],
-        requireOtherMuted: HuluPlayerIdentity?
+        for identity: PlayerIdentity,
+        expectedPlayers: [PlayerIdentity],
+        requireOtherMuted: PlayerIdentity?
     ) throws -> AXError? {
         let live = try resolve(identity, expectedPlayers: expectedPlayers)
         let desiredState: ChromeTabAudioState = desired ? .muted : .playing
@@ -172,11 +172,11 @@ final class HuluPlayerClient: HuluPlayerControlling {
         return result
     }
 
-    private func resolve(_ identity: HuluPlayerIdentity, expectedPlayers: [HuluPlayerIdentity]) throws -> LivePlayer {
+    private func resolve(_ identity: PlayerIdentity, expectedPlayers: [PlayerIdentity]) throws -> LivePlayer {
         guard let target = bindings[identity.token], target.identity == identity,
               expectedPlayers.count == bindings.count,
               expectedPlayers.allSatisfy({ bindings[$0.token] != nil }) else {
-            throw AccessibilityFailure("The current Ad Muting pass no longer owns this Hulu player identity.")
+            throw AccessibilityFailure("The current Ad Muting pass no longer owns this Chrome player identity.")
         }
         let areas = try currentWatchAreas()
         guard areas.count == expectedPlayers.count,
@@ -185,7 +185,7 @@ final class HuluPlayerClient: HuluPlayerControlling {
                   return areas.filter { sameArea($0, bound.area) }.count == 1
               }),
               let targetArea = areas.first(where: { sameArea($0, target.area) }) else {
-            throw AccessibilityFailure("A Chrome window, Hulu web area, or watch URL changed during the Ad Muting pass. Ad Muting stopped before another press.")
+            throw AccessibilityFailure("A Chrome window, supported web area, or watch URL changed during the Ad Muting pass. Ad Muting stopped before another press.")
         }
         let audioBindings = try tabAudio.bind(areas)
         guard let currentAudio = uniqueAudioBinding(for: targetArea, in: audioBindings),
@@ -196,8 +196,8 @@ final class HuluPlayerClient: HuluPlayerControlling {
         return try readPlayer(BoundPlayer(identity: identity, area: targetArea, audio: currentAudio))
     }
 
-    private func state(_ live: LivePlayer) -> HuluPlayerState {
-        HuluPlayerState(
+    private func state(_ live: LivePlayer) -> PlayerState {
+        PlayerState(
             identity: live.bound.identity,
             windowIndex: live.bound.area.windowIndex,
             muted: live.bound.audio.state == .muted,
@@ -207,30 +207,14 @@ final class HuluPlayerClient: HuluPlayerControlling {
     }
 
     private func readPlayer(_ bound: BoundPlayer) throws -> LivePlayer {
-        let roots = try chrome.inspect(
-            bound.area.webArea,
-            maximumNodes: 1_500,
-            maximumDepth: 45,
-            timeout: 5,
-            stopDescending: { ($0.depth > 0 && $0.role == "AXWebArea") || $0.domIdentifier == "__player__" }
-        ).filter { $0.domIdentifier == "__player__" && !$0.hidden }
-        guard roots.count == 1, let root = roots.first else {
-            throw AccessibilityFailure("Hulu watch page \(bound.identity.url) does not expose one visible __player__ container.")
+        guard let provider = PlayerAdDetection.provider(for: bound.identity.url) else {
+            throw AccessibilityFailure("Player URL is no longer a supported playback route.")
         }
-        let nodes = try chrome.inspect(root.element, maximumNodes: 1_200, maximumDepth: 35, timeout: 4, stopDescending: { _ in false })
-        let markers = nodes.filter {
-            !$0.hidden && $0.role == kAXStaticTextRole && AdMarker.matches($0.value)
-        }.map(\.element)
-        return LivePlayer(bound: bound, playerRoot: root.element, adMarkers: markers)
+        return LivePlayer(bound: bound, provider: provider, evidence: try provider.read(in: bound.area.webArea, chrome: chrome))
     }
 
     private func markerIsStillPresent(in live: LivePlayer) throws -> Bool {
-        guard try chrome.attribute(live.playerRoot, "AXHidden") as? Bool != true else { return false }
-        return try live.adMarkers.contains { marker in
-            try chrome.text(marker, kAXRoleAttribute) == kAXStaticTextRole &&
-                chrome.attribute(marker, "AXHidden") as? Bool != true &&
-                AdMarker.matches(try chrome.text(marker, kAXValueAttribute))
-        }
+        try live.provider.markerIsStillPresent(live.evidence, chrome: chrome)
     }
 
     private func currentWatchAreas() throws -> [ChromeWatchArea] {
@@ -241,7 +225,7 @@ final class HuluPlayerClient: HuluPlayerControlling {
             let webAreas = nodes.filter { $0.role == "AXWebArea" && !$0.hidden }
             guard let topDepth = webAreas.map(\.depth).min() else { continue }
             for node in webAreas where node.depth == topDepth {
-                guard let url = node.url, Self.isHuluWatchURL(url) else { continue }
+                guard let url = node.url, PlayerAdDetection.provider(for: url) != nil else { continue }
                 result.append(ChromeWatchArea(
                     window: window,
                     windowIndex: index,
@@ -274,7 +258,7 @@ final class HuluPlayerClient: HuluPlayerControlling {
     private func stableIdentity(
         for area: ChromeWatchArea,
         audio: ChromeTabAudioBinding
-    ) -> HuluPlayerIdentity? {
+    ) -> PlayerIdentity? {
         let matches = bindings.values.filter {
             sameArea($0.area, area) &&
                 CFEqual($0.audio.tab, audio.tab) &&
@@ -283,9 +267,4 @@ final class HuluPlayerClient: HuluPlayerControlling {
         return matches.count == 1 ? matches[0].identity : nil
     }
 
-    static func isHuluWatchURL(_ value: String) -> Bool {
-        guard let url = URL(string: value), url.scheme == "https",
-              ["hulu.com", "www.hulu.com"].contains(url.host ?? "") else { return false }
-        return url.path.hasPrefix("/watch/")
-    }
 }

@@ -36,7 +36,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         )
     )
     private lazy var operationController: HuluOperationController = {
-        let monitor = AdMonitor(operationQueue: operationQueue) { try HuluPlayerClient() }
+        let monitor = AdMonitor(operationQueue: operationQueue) { try ChromePlayerClient() }
         let controller = HuluOperationController(
             monitor: monitor,
             operationQueue: operationQueue,

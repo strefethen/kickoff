@@ -12,15 +12,15 @@ enum AdMonitorStatus: Equatable {
         case .stopped:
             return "Ad muting stopped"
         case .scanning:
-            return "Checking Hulu players…"
+            return "Checking Chrome players…"
         case .waitingForPlayers:
-            return "Ad muting — waiting for a Hulu player"
+            return "Ad muting — waiting for a Chrome player"
         case let .monitoring(players, newlyMuted, newlyUnmuted):
             var changes: [String] = []
             if newlyMuted > 0 { changes.append("muted \(newlyMuted) ad\(newlyMuted == 1 ? "" : "s")") }
             if newlyUnmuted > 0 { changes.append("restored \(newlyUnmuted) player\(newlyUnmuted == 1 ? "" : "s")") }
             let suffix = changes.isEmpty ? "" : " — " + changes.joined(separator: ", ")
-            return "Ad muting \(players) Hulu player\(players == 1 ? "" : "s")\(suffix)"
+            return "Ad muting \(players) Chrome player\(players == 1 ? "" : "s")\(suffix)"
         case let .failed(message):
             return "Ad muting stopped: \(message)"
         }
@@ -51,16 +51,16 @@ final class MonitorCancellation {
 /// Owns opt-in polling, cancellation, run generations, and monitor status.
 /// Public methods are called on the main thread; AX work runs serially elsewhere.
 final class AdMonitor {
-    typealias PlayerFactory = () throws -> HuluPlayerControlling
+    typealias PlayerFactory = () throws -> PlayerControlling
 
     private let operationQueue: DispatchQueue
     private let interval: TimeInterval
     private let playerFactory: PlayerFactory
     private final class RunContext {
-        let player: HuluPlayerControlling
+        let player: PlayerControlling
         let policy = AdAudioPolicy()
 
-        init(player: HuluPlayerControlling) { self.player = player }
+        init(player: PlayerControlling) { self.player = player }
     }
 
     /// Accessed only by operationQueue.
