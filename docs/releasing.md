@@ -34,4 +34,23 @@ ASC_KEY_PATH="$ASC_KEY_PATH" \
 
 `ASC_KEY_PATH` points to the local App Store Connect `.p8` file. Packaging submits a temporary ZIP to Apple's notary service and requires an `Accepted` result before stapling and verification. The final files are `build/release/Kickoff-<version>-arm64.zip` and its `.sha256` checksum. A failed signing, notarization, stapling, or assessment step removes those distributable files.
 
-For a signed app bundle without notarization or an archive, provide `RELEASE_VERSION`, `RELEASE_BUILD`, and `CODE_SIGN_IDENTITY` to `./build-app.sh --release`. The normal `./build-app.sh` command continues to create the ad-hoc signed native build at `build/Kickoff.app`.
+For a signed app bundle without notarization or an archive, provide `RELEASE_VERSION`, `RELEASE_BUILD`, and `CODE_SIGN_IDENTITY` to `./build-app.sh --release`.
+
+## Local development builds
+
+The normal `./build-app.sh` command requires a certificate signing identity to keep Kickoff's identity stable across rebuilds and retain its Accessibility approval. Choose an installed Developer ID Application certificate with its private key in your keychain. List available identities with `security find-identity -v -p codesigning`, then configure this checkout once using the certificate's SHA-1 fingerprint:
+
+```sh
+git config --local kickoff.signingIdentity '<certificate SHA-1 fingerprint>'
+./build-app.sh
+```
+
+The setting stays in this checkout's Git configuration. Keep using the same certificate for subsequent builds. To override the setting for a single build:
+
+```sh
+CODE_SIGN_IDENTITY='<certificate SHA-1 fingerprint>' ./build-app.sh
+```
+
+An explicitly set `CODE_SIGN_IDENTITY` takes precedence, including an empty value. Missing, empty, or ad-hoc (`-`) identities stop the build. The script signs and verifies a staging bundle before replacing `build/Kickoff.app`; signing failure leaves the previous bundle intact.
+
+Switching from an existing ad-hoc build to the certificate-signed build may require one Accessibility approval in System Settings. Persistence across later builds depends on keeping the same signing certificate and bundle identity.
