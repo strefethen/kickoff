@@ -11,7 +11,7 @@ It mutes ads when detectable.
 
 ## Requirements
 
-- macOS 13 or later
+- macOS 14 or later
 - Apple Silicon Mac
 - Google Chrome with split view available
 - Swift 5.9 or later when building from source

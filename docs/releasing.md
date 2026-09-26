@@ -1,6 +1,6 @@
 # Releasing Kickoff
 
-Release builds are Apple Silicon-only (`arm64`), use hardened runtime Developer ID signing, and retain the app's macOS 13 deployment target. The release workflow is pinned to Xcode 16.4 on the `macos-15` runner.
+Release builds are Apple Silicon-only (`arm64`), use hardened runtime Developer ID signing, and retain the app's macOS 14 deployment target. The release workflow is pinned to Xcode 16.4 on the `macos-15` runner.
 
 ## GitHub configuration
 

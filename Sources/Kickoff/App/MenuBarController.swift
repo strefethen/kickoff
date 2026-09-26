@@ -3,26 +3,38 @@ import ApplicationServices
 import Foundation
 
 /// Owns only the menu-bar shell and composes the monitor/layout lifecycles.
-final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class MenuBarController: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
-    private let statusMenuItem = NSMenuItem(title: "Ready", action: nil, keyEquivalent: "")
-    private let adMutingMenuItem = NSMenuItem(title: "Ad Muting", action: nil, keyEquivalent: "")
-    private let setupMenuItem = NSMenuItem(title: "Set Up Split Screen", action: nil, keyEquivalent: "")
-    private let quadSetupMenuItem = NSMenuItem(title: "Set Up Quad Screen", action: nil, keyEquivalent: "")
-    private let settingsMenuItem = NSMenuItem(title: "Settings…", action: nil, keyEquivalent: ",")
-    private let permissionMenuItem = NSMenuItem(title: "Open Accessibility Settings…", action: nil, keyEquivalent: "")
-    private let revealMenuItem = NSMenuItem(title: "Show App in Finder", action: nil, keyEquivalent: "")
-    private let permissionHint = NSMenuItem(title: "Use + to add Kickoff, then enable it", action: nil, keyEquivalent: "")
+    private var screenObserver: NSObjectProtocol?
     private let operationQueue = DispatchQueue(label: "com.stevetrefethen.kickoff.operations", qos: .userInitiated)
     private let appMenuController = AppMenuController()
     private let monitorSelection = MonitorSelection()
     private let websitePreferences = WebsitePreferences()
-    private lazy var settingsWindowController = SettingsWindowController(preferences: websitePreferences)
-    private lazy var monitorMenuController: MonitorMenuController = {
-        let controller = MonitorMenuController(selection: monitorSelection)
-        controller.onChange = { [weak self] in self?.refreshMenu() }
+    private lazy var settingsWindowController: SettingsWindowController = {
+        let controller = SettingsWindowController(preferences: websitePreferences)
+        controller.onSave = { [weak self] in self?.refreshMenu() }
         return controller
     }()
+    private lazy var setupMenuController = SetupMenuController(
+        selection: monitorSelection,
+        preferences: websitePreferences,
+        readRuntime: { [weak self] in
+            guard let self else { return .init(accessibilityTrusted: false, isQuitting: true) }
+            return .init(accessibilityTrusted: AXIsProcessTrusted(),
+                         isSettingUp: self.operationController.isSettingUp,
+                         isMonitoring: self.operationController.isMonitoring,
+                         isQuitting: self.operationController.isQuitting,
+                         status: self.operationController.status)
+        },
+        actions: .init(
+            setUp: { [weak self] mode in self?.operationController.startSetup(mode: mode) },
+            toggleAdMuting: { [weak self] in self?.toggleAdMuting() },
+            editWebsite: { [weak self] in self?.settingsWindowController.show() },
+            openAccessibilitySettings: { [weak self] in self?.openAccessibilitySettings() },
+            showAppInFinder: { [weak self] in self?.showAppInFinder() },
+            quit: { [weak self] in self?.quitApp() }
+        )
+    )
     private lazy var operationController: HuluOperationController = {
         let monitor = AdMonitor(operationQueue: operationQueue) { try HuluPlayerClient() }
         let controller = HuluOperationController(
@@ -53,72 +65,24 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.imagePosition = .imageOnly
         statusItem.button?.setAccessibilityLabel("Kickoff controls")
 
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        menu.delegate = self
-        statusMenuItem.isEnabled = false
-        menu.addItem(statusMenuItem)
-        menu.addItem(.separator())
-
-        configure(adMutingMenuItem, action: #selector(toggleAdMuting))
-        menu.addItem(adMutingMenuItem)
-        menu.addItem(.separator())
-
-        menu.addItem(monitorMenuController.item)
-        configure(setupMenuItem, action: #selector(setUpChrome))
-        configure(quadSetupMenuItem, action: #selector(setUpQuadView))
-        configure(permissionMenuItem, action: #selector(openAccessibilitySettings))
-        configure(revealMenuItem, action: #selector(showAppInFinder))
-        menu.addItem(setupMenuItem)
-        menu.addItem(quadSetupMenuItem)
-        menu.addItem(permissionMenuItem)
-        menu.addItem(revealMenuItem)
-        permissionHint.isEnabled = false
-        menu.addItem(permissionHint)
-        menu.addItem(.separator())
-
-        configure(settingsMenuItem, action: #selector(showSettings))
-        menu.addItem(settingsMenuItem)
-        menu.addItem(.separator())
-
-        let quit = NSMenuItem(title: "Quit Kickoff", action: #selector(quitApp), keyEquivalent: "q")
-        quit.target = self
-        menu.addItem(quit)
-        statusItem.menu = menu
+        setupMenuController.onOpen = { [weak self] in
+            self?.operationController.startDefaultMonitoringIfNeeded(accessibilityTrusted: AXIsProcessTrusted())
+        }
+        statusItem.menu = setupMenuController.menu
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.refreshMenu() }
         operationController.startDefaultMonitoringIfNeeded(accessibilityTrusted: AXIsProcessTrusted())
         refreshMenu()
     }
 
-    func menuWillOpen(_ menu: NSMenu) {
-        operationController.startDefaultMonitoringIfNeeded(accessibilityTrusted: AXIsProcessTrusted())
-        refreshMenu()
-    }
-
-    private func configure(_ item: NSMenuItem, action: Selector) {
-        item.target = self
-        item.action = action
+    deinit {
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
     }
 
     private func refreshMenu() {
-        let trusted = AXIsProcessTrusted()
-        let monitorSnapshot = monitorSelection.snapshot()
-        let targetTitle = monitorSnapshot.target.map { monitorSnapshot.title(for: $0) }
-        statusMenuItem.title = trusted ? operationController.status : "Accessibility permission needed"
-        adMutingMenuItem.state = operationController.isMonitoring ? .on : .off
-        adMutingMenuItem.isEnabled = !operationController.isSettingUp &&
-            (operationController.isMonitoring || trusted)
-        setupMenuItem.title = targetTitle.map { "Set Up Split Screen on \($0)" } ?? "Set Up Split Screen"
-        setupMenuItem.isEnabled = trusted && !operationController.isSettingUp && targetTitle != nil
-        quadSetupMenuItem.title = targetTitle.map { "Set Up Quad Screen on \($0)" } ?? "Set Up Quad Screen"
-        quadSetupMenuItem.isEnabled = trusted && !operationController.isSettingUp && targetTitle != nil
-        monitorMenuController.refresh(
-            snapshot: monitorSnapshot,
-            isEnabled: !operationController.isSettingUp
-        )
-        permissionMenuItem.isEnabled = !operationController.isSettingUp
-        revealMenuItem.isEnabled = !operationController.isSettingUp
-        permissionHint.isHidden = trusted
-        statusItem.button?.toolTip = statusMenuItem.title
+        setupMenuController.refresh()
+        statusItem?.button?.toolTip = setupMenuController.status
     }
 
     private func logStatus() {
@@ -138,16 +102,6 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         operationController.toggleMonitoring(accessibilityTrusted: AXIsProcessTrusted())
     }
 
-    @objc private func setUpChrome() {
-        guard AXIsProcessTrusted() else { refreshMenu(); return }
-        operationController.startSetup(mode: .split)
-    }
-
-    @objc private func setUpQuadView() {
-        guard AXIsProcessTrusted() else { refreshMenu(); return }
-        operationController.startSetup(mode: .quad)
-    }
-
     @objc private func openAccessibilitySettings() {
         guard !operationController.isSettingUp else { return }
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"),
@@ -165,10 +119,6 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func showAppInFinder() {
         guard !operationController.isSettingUp else { return }
         NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
-    }
-
-    @objc private func showSettings() {
-        settingsWindowController.show()
     }
 
     @objc private func quitApp() {

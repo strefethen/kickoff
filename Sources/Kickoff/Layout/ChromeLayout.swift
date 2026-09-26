@@ -182,6 +182,21 @@ final class ChromeLayout {
         log(["event": "setup-complete", "chromePID": chrome.pid, "display": monitor.name, "urls": finalURLs])
     }
 
+    func setupSingleWindow() throws {
+        try step("Create window on \(monitor.name)") { _ = try prepare() }
+        try step("Load website page") { try browseActiveWebsite(expectedPages: 1) }
+        try step("Enter full screen") { try enterFullScreen() }
+        let final = try currentTargetWindow()
+        let finalURLs = pageURLs(final)
+        guard !hasSplit(final), finalURLs.count == 1 else {
+            throw AccessibilityFailure("Final single-window Chrome layout could not be verified.")
+        }
+        if let failure = website.redirectFailure(for: finalURLs) {
+            throw AccessibilityFailure(failure)
+        }
+        log(["event": "setup-complete", "chromePID": chrome.pid, "display": monitor.name, "urls": finalURLs])
+    }
+
     func setupSplitWindow(frame: CGRect) throws {
         try configureSplitWindow(frame: frame)
     }

@@ -27,6 +27,11 @@ final class ChromeSetupTests: XCTestCase {
             if let setupError { throw setupError }
         }
 
+        func setupSingleWindow() throws {
+            events("single:\(id)")
+            if let setupError { throw setupError }
+        }
+
         func setupSplitWindow(frame: CGRect) throws {
             events("split:\(id):\(NSStringFromRect(frame))")
             if let splitError { throw splitError }
@@ -104,6 +109,38 @@ final class ChromeSetupTests: XCTestCase {
         XCTAssertEqual(events, ["setup:1"])
         XCTAssertEqual(capturedMonitors, [monitor])
         XCTAssertEqual(capturedWebsites, [website])
+    }
+
+    func testSingleModeCreatesOneSessionWithTargetAndWebsiteWithoutSplitCalls() throws {
+        var events: [String] = []
+        var factoryCalls = 0
+        let monitor = makeMonitor()
+        let target = MonitorTarget(monitor: monitor, discover: { [monitor] })
+        let website = try WebsiteURL("https://example.com/game")
+        let setup = ChromeSetup(target: target, website: website) { capturedTarget, capturedWebsite in
+            factoryCalls += 1
+            XCTAssertEqual(capturedTarget.monitor, monitor)
+            XCTAssertEqual(capturedWebsite, website)
+            return FakeSession(id: factoryCalls, events: { events.append($0) })
+        }
+        try setup.setup(mode: .single)
+        XCTAssertEqual(factoryCalls, 1)
+        XCTAssertEqual(events, ["single:1"])
+    }
+
+    func testSingleModeFailurePropagatesWithoutReplacementOrSplit() throws {
+        var events: [String] = []
+        var factoryCalls = 0
+        let monitor = makeMonitor()
+        let setup = ChromeSetup(target: MonitorTarget(monitor: monitor, discover: { [monitor] }), website: .approvedDefault) { _, _ in
+            factoryCalls += 1
+            let session = FakeSession(id: factoryCalls, events: { events.append($0) })
+            session.setupError = StubError.setup
+            return session
+        }
+        XCTAssertThrowsError(try setup.setup(mode: .single)) { XCTAssertEqual($0 as? StubError, .setup) }
+        XCTAssertEqual(factoryCalls, 1)
+        XCTAssertEqual(events, ["single:1"])
     }
 
     func testQuadUsesTwoSequentialSessionsThenVerifiesPair() throws {

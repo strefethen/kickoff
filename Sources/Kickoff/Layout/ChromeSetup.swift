@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 
 enum ChromeSetupMode: Equatable {
+    case single
     case split
     case quad
 }
@@ -17,6 +18,7 @@ struct ChromeBrowserInsets: Equatable {
 
 protocol ChromeWindowSettingUp: AnyObject {
     func setup() throws
+    func setupSingleWindow() throws
     func setupSplitWindow(frame: CGRect) throws
     func measuredBrowserInsets() throws -> ChromeBrowserInsets
     func placeWindow(frame: CGRect) throws
@@ -48,6 +50,8 @@ final class ChromeSetup {
 
     func setup(mode: ChromeSetupMode) throws {
         switch mode {
+        case .single:
+            try makeSession(target, website).setupSingleWindow()
         case .split:
             try makeSession(target, website).setup()
         case .quad:
