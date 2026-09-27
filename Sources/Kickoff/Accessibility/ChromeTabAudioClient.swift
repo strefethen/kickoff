@@ -4,6 +4,11 @@ import Foundation
 /// Discovery could not establish audio state; no action has been attempted.
 struct ChromeAudioControlsUnavailable: Error, CustomStringConvertible {
     let description: String
+    var watchAreas: [ChromeWatchArea] = []
+
+    func merging(_ other: ChromeAudioControlsUnavailable) -> ChromeAudioControlsUnavailable {
+        .init(description: description, watchAreas: watchAreas + other.watchAreas)
+    }
 }
 
 enum ChromeTabAudioState: Equatable {
@@ -75,7 +80,7 @@ final class ChromeTabAudioClient {
                 result.append(contentsOf: try bind(inWindow, window: first.window))
             } catch let error as ChromeAudioControlsUnavailable {
                 // Validate the other windows before accepting a recoverable gap.
-                unavailable = unavailable ?? error
+                unavailable = unavailable?.merging(error) ?? error
             }
         }
         if let unavailable { throw unavailable }
@@ -215,7 +220,7 @@ final class ChromeTabAudioClient {
                 result.append(try binding(area: area, tab: tab, side: side, peerArea: peerArea, peerTab: peerTab))
             } catch let error as ChromeAudioControlsUnavailable {
                 // A missing control must not hide a terminal failure on its peer.
-                unavailable = unavailable ?? error
+                unavailable = unavailable?.merging(error) ?? error
             }
         }
         if let unavailable { throw unavailable }
@@ -237,12 +242,12 @@ final class ChromeTabAudioClient {
         do {
             state = try audioState(title: tab.title, description: tab.nodeDescription)
         } catch AudioStatePending.missing {
-            throw ChromeAudioControlsUnavailable(description: "Chrome is not reporting tab audio state.")
+            throw ChromeAudioControlsUnavailable(description: "Chrome is not reporting tab audio state.", watchAreas: [area])
         } catch is AudioStatePending {
             throw AccessibilityFailure("Chrome native tab has conflicting Audio playing/Audio muted state.")
         }
         guard let button = tab.button else {
-            throw ChromeAudioControlsUnavailable(description: "Chrome is not exposing a native tab audio button.")
+            throw ChromeAudioControlsUnavailable(description: "Chrome is not exposing a native tab audio button.", watchAreas: [area])
         }
         return ChromeTabAudioBinding(
             window: area.window,

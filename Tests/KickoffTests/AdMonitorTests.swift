@@ -335,26 +335,148 @@ final class AdMonitorTests: XCTestCase {
         XCTAssertEqual(fake.calls(), [ad.identity.token])
     }
 
-    func testUnavailableDiscoveryStopsAtDeadlineBeforeAnotherRead() {
+    func testUnavailableDiscoveryEntersSlowRecoveryBeforeAnotherRead() {
         let fake = FakePlayerClient(players: [])
         fake.discoveryErrors[0] = ChromeAudioControlsUnavailable(description: "missing")
         let clock = TestMonotonicClock()
         let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01,
                                 monotonicTime: clock.now) { fake }
-        let failed = expectation(description: "bounded failure")
+        let deferred = expectation(description: "bounded fast recovery")
         monitor.onStatusChange = { status in
             if case .waitingForAudioControls = status { clock.advance(30) }
-            if case let .failed(message) = status {
-                XCTAssertTrue(message.contains("30 seconds"))
-                XCTAssertTrue(message.contains("Resume playback"))
-                failed.fulfill()
+            if case .audioControlsUnavailable(retryIntervalSeconds: 30) = status {
+                XCTAssertTrue(monitor.isRunning)
+                deferred.fulfill()
             }
         }
         monitor.start()
-        wait(for: [failed], timeout: 2)
-        XCTAssertFalse(monitor.isRunning)
+        wait(for: [deferred], timeout: 2)
+        monitor.stopAndDrain()
         XCTAssertEqual(fake.discoveryCount, 1)
         XCTAssertTrue(fake.calls().isEmpty)
+    }
+
+    func testSlowRecoveryChecksOnlyAtConfiguredIntervalThenResets() {
+        let fake = FakePlayerClient(players: [])
+        fake.discoveryErrors = [0: ChromeAudioControlsUnavailable(description: "missing"),
+                                1: ChromeAudioControlsUnavailable(description: "still missing"),
+                                3: ChromeAudioControlsUnavailable(description: "new gap")]
+        let clock = TestMonotonicClock()
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.005,
+                                audioRetryInterval: 0.12, monotonicTime: clock.now) { fake }
+        let reset = expectation(description: "fresh fast recovery after success")
+        var slowChecks = 0
+        var deferredAt: TimeInterval?
+        monitor.onStatusChange = { status in
+            if case .waitingForAudioControls = status {
+                if slowChecks == 0 { clock.advance(30) }
+                else { reset.fulfill() }
+            }
+            if case .audioControlsUnavailable = status {
+                slowChecks += 1
+                if let previous = deferredAt {
+                    XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - previous, 0.10)
+                    XCTAssertEqual(fake.discoveryCount, 2)
+                }
+                deferredAt = ProcessInfo.processInfo.systemUptime
+                XCTAssertTrue(monitor.isRunning)
+                XCTAssertTrue(fake.calls().isEmpty)
+            }
+        }
+        monitor.start()
+        wait(for: [reset], timeout: 2)
+        monitor.stopAndDrain()
+        XCTAssertEqual(slowChecks, 2)
+    }
+
+    func testStopCancelsPendingSlowProbeAndRestartIsFresh() {
+        let fake = FakePlayerClient(players: [])
+        fake.discoveryErrors[0] = ChromeAudioControlsUnavailable(description: "missing")
+        let clock = TestMonotonicClock()
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.005,
+                                audioRetryInterval: 0.08, monotonicTime: clock.now) { fake }
+        let deferred = expectation(description: "slow mode")
+        monitor.onStatusChange = { status in
+            if case .waitingForAudioControls = status { clock.advance(30) }
+            if case .audioControlsUnavailable = status { deferred.fulfill() }
+        }
+        monitor.start()
+        wait(for: [deferred], timeout: 1)
+        let drained = expectation(description: "drained")
+        monitor.stopAndDrain { drained.fulfill() }
+        wait(for: [drained], timeout: 1)
+        let notRead = expectation(description: "no deferred discovery")
+        notRead.isInverted = true
+        fake.discoverStarted = { notRead.fulfill() }
+        wait(for: [notRead], timeout: 0.12)
+        XCTAssertEqual(fake.discoveryCount, 1)
+        fake.discoverStarted = nil
+        awaitStatus({ $0 == .waitingForPlayers }, monitor: monitor) { monitor.start() }
+    }
+
+    func testLongPauseResumesOwnedMuteWithFreshAbsenceEvidence() {
+        let chrome = HuluPlayerPrepressTests.FakeChrome()
+        chrome.providers = [.peacock, .hulu]
+        chrome.pauseURL = false
+        let clock = TestMonotonicClock()
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01,
+                                monotonicTime: clock.now) { ChromePlayerClient(chrome: chrome) }
+        let restored = expectation(description: "same owned player restored after pause")
+        var pauses = 0
+        monitor.onStatusChange = { status in
+            if status == .monitoring(players: 1, newlyMuted: 1, newlyUnmuted: 0) {
+                chrome.pauseURL = true
+                chrome.pausedControls = [0]
+                chrome.missingAudioButton = true
+            }
+            if status == .waitingForPlayback {
+                pauses += 1
+                clock.advance(90)
+                XCTAssertTrue(monitor.isRunning)
+                XCTAssertEqual(chrome.presses, 1)
+                if pauses == 2 {
+                    chrome.pauseURL = false
+                    chrome.missingAudioButton = false
+                    chrome.pausedControls = []
+                    chrome.markerPresent[0] = false
+                }
+            }
+            if status == .monitoring(players: 1, newlyMuted: 0, newlyUnmuted: 1) { restored.fulfill() }
+        }
+        monitor.start()
+        wait(for: [restored], timeout: 2)
+        monitor.stopAndDrain()
+        XCTAssertEqual(pauses, 2)
+        XCTAssertEqual(chrome.presses, 2)
+    }
+
+    func testSlowRecoveryRestoresOnlyFreshOwnedPlayer() {
+        let chrome = HuluPlayerPrepressTests.FakeChrome()
+        chrome.providers = [.peacock, .hulu]
+        chrome.pauseURL = false
+        let clock = TestMonotonicClock()
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.005,
+                                audioRetryInterval: 0.01, monotonicTime: clock.now) { ChromePlayerClient(chrome: chrome) }
+        let restored = expectation(description: "owned mute restored after slow probe")
+        var slow = false
+        monitor.onStatusChange = { status in
+            if status == .monitoring(players: 1, newlyMuted: 1, newlyUnmuted: 0) {
+                chrome.missingAudioButton = true
+            }
+            if case .waitingForAudioControls = status { clock.advance(30) }
+            if case .audioControlsUnavailable = status {
+                slow = true
+                XCTAssertEqual(chrome.presses, 1)
+                chrome.missingAudioButton = false
+                chrome.markerPresent[0] = false
+            }
+            if status == .monitoring(players: 1, newlyMuted: 0, newlyUnmuted: 1) { restored.fulfill() }
+        }
+        monitor.start()
+        wait(for: [restored], timeout: 2)
+        monitor.stopAndDrain()
+        XCTAssertTrue(slow)
+        XCTAssertEqual(chrome.presses, 2)
     }
 
     func testSuccessfulPassResetsUnavailableDeadline() {
@@ -391,7 +513,7 @@ final class AdMonitorTests: XCTestCase {
         fake.discoverStarted = { if fake.discoveryCount == 1 { clock.advance(30) } }
         let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01,
                                 monotonicTime: clock.now) { fake }
-        awaitStatus({ if case .failed = $0 { return true }; return false }, monitor: monitor) { monitor.start() }
+        awaitStatus({ if case .audioControlsUnavailable = $0 { return true }; return false }, monitor: monitor) { monitor.start() }
         XCTAssertEqual(fake.discoveryCount, 2)
         XCTAssertTrue(fake.calls().isEmpty)
     }

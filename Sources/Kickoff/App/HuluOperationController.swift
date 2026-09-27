@@ -6,6 +6,7 @@ final class HuluOperationController {
     private let operationQueue: DispatchQueue
     private let prepareSetup: (ChromeSetupMode) throws -> (() throws -> Void)
 
+    private(set) var isAdMutingEnabled = true
     private(set) var isSettingUp = false
     private(set) var isQuitting = false
     private(set) var status = "Ready"
@@ -15,6 +16,11 @@ final class HuluOperationController {
 
     var isMonitoring: Bool { monitor.isRunning }
     var monitorStatus: AdMonitorStatus { monitor.status }
+    var canRetryAdMuting: Bool {
+        guard isAdMutingEnabled, !isMonitoring, !isSettingUp, !isQuitting else { return false }
+        if case .failed = monitor.status { return true }
+        return false
+    }
 
     init(
         monitor: AdMonitor,
@@ -34,19 +40,22 @@ final class HuluOperationController {
     func startMonitoring() {
         dispatchPrecondition(condition: .onQueue(.main))
         shouldStartDefaultMonitoring = false
-        guard !isSettingUp else { return }
+        guard !isSettingUp, !isQuitting else { return }
+        isAdMutingEnabled = true
         monitor.start()
     }
 
     func stopMonitoring(completion: (() -> Void)? = nil) {
         dispatchPrecondition(condition: .onQueue(.main))
         shouldStartDefaultMonitoring = false
+        isAdMutingEnabled = false
         monitor.stopAndDrain(completion: completion)
     }
 
     func startDefaultMonitoringIfNeeded(accessibilityTrusted: Bool) {
         dispatchPrecondition(condition: .onQueue(.main))
         guard shouldStartDefaultMonitoring,
+              isAdMutingEnabled,
               accessibilityTrusted,
               !isSettingUp,
               !isQuitting else { return }
@@ -57,11 +66,18 @@ final class HuluOperationController {
     func toggleMonitoring(accessibilityTrusted: Bool) {
         dispatchPrecondition(condition: .onQueue(.main))
         shouldStartDefaultMonitoring = false
-        if monitor.isRunning {
-            monitor.stopAndDrain()
+        guard !isSettingUp, !isQuitting else { return }
+        if isAdMutingEnabled {
+            stopMonitoring()
             return
         }
-        guard accessibilityTrusted, !isSettingUp else { return }
+        guard accessibilityTrusted else { return }
+        startMonitoring()
+    }
+
+    func retryAdMuting(accessibilityTrusted: Bool) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard accessibilityTrusted, canRetryAdMuting else { return }
         monitor.start()
     }
 
@@ -79,6 +95,7 @@ final class HuluOperationController {
             onSetupFailure?(failure)
             return
         }
+        isAdMutingEnabled = false
         isSettingUp = true
         status = "Stopping ad muting before Chrome setup…"
         monitor.stopAndDrain { [weak self] in
@@ -107,6 +124,7 @@ final class HuluOperationController {
     func stopForQuit(completion: @escaping () -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
         shouldStartDefaultMonitoring = false
+        isAdMutingEnabled = false
         isQuitting = true
         isSettingUp = false
         monitor.stopAndDrain(completion: completion)

@@ -50,7 +50,7 @@ Kickoff uses the selected monitor for future setup runs. If that monitor is unav
 
 Changing the Website URL affects the next setup run. It does not navigate Chrome panes that are already open.
 
-Ad Muting stays enabled while Chrome temporarily stops exposing tab-audio controls, such as during an episode transition. The menu shows a waiting countdown for up to 30 seconds. If controls do not return, monitoring stops with instructions to resume playback and check Chrome’s tab-audio configuration. Audio actions require freshly verified controls; incomplete scans never count toward restoration.
+Ad Muting defaults to On and keeps your selection through runtime errors. Confirmed paused Peacock playback waits normally and resumes monitoring when playback starts. When active playback lacks tab-audio controls, Kickoff checks normally for up to 30 seconds, then checks once every 30 seconds until controls return. Invalid bindings or audio action/readback failures stop monitoring and show an explicit Retry Ad Muting command while keeping On selected. Audio actions require freshly verified controls; incomplete scans never count toward restoration.
 
 ## Tests
 

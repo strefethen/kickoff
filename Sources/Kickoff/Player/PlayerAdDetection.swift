@@ -55,6 +55,7 @@ enum PlayerAdDetection: Equatable {
         let requiredAnchorIdentifier: String?
         let requiredAnchorAncestors: [AXUIElement]
         let markers: [Marker]
+        let hasPausedPlaybackControl: Bool
     }
 
     func read(in area: AXUIElement, chrome: ChromeAccessibilityAccessing) throws -> Evidence {
@@ -80,10 +81,16 @@ enum PlayerAdDetection: Equatable {
         var lineage: [AccessibilityNode] = []
         var markers: [Marker] = []
         var anchorAncestors: [AXUIElement] = []
+        var playControls = 0
+        var pauseControls = 0
         for node in nodes {
             while let last = lineage.last, last.depth >= node.depth { lineage.removeLast() }
             if let anchor, CFEqual(node.element, anchor.element) {
                 anchorAncestors = lineage.map(\.element)
+            }
+            if node.role == kAXButtonRole && !node.hidden && lineage.allSatisfy({ !$0.hidden }) {
+                if node.title == "Play" { playControls += 1 }
+                if node.title == "Pause" { pauseControls += 1 }
             }
             if isMarker(node) {
                 markers.append(Marker(element: node.element, ancestors: lineage.map(\.element)))
@@ -92,7 +99,16 @@ enum PlayerAdDetection: Equatable {
         }
         return Evidence(root: root.element, requiredAnchor: anchor?.element,
                         requiredAnchorIdentifier: anchor?.domIdentifier,
-                        requiredAnchorAncestors: anchorAncestors, markers: markers)
+                        requiredAnchorAncestors: anchorAncestors, markers: markers,
+                        hasPausedPlaybackControl: playControls == 1 && pauseControls == 0)
+    }
+
+    func isPlaybackPaused(in area: AXUIElement, url: String, chrome: ChromeAccessibilityAccessing) throws -> Bool {
+        guard self == .peacock,
+              let query = URLComponents(string: url)?.queryItems,
+              query.filter({ $0.name == "paused" }).count == 1,
+              query.contains(where: { $0.name == "paused" && $0.value == "true" }) else { return false }
+        return try read(in: area, chrome: chrome).hasPausedPlaybackControl
     }
 
     private func requiredAnchor(in nodes: [AccessibilityNode]) throws -> AccessibilityNode? {

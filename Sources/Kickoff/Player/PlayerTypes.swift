@@ -59,4 +59,9 @@ enum AdMarker {
     }
 }
 
+/// Complete discovery identified paused playback, so tab audio is not required yet.
+struct PlayerPlaybackPaused: Error, CustomStringConvertible {
+    var description: String { "Supported playback is paused; waiting for playback to resume." }
+}
+
 struct MonitoringCancelled: Error {}

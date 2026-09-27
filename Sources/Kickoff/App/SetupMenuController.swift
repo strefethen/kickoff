@@ -5,7 +5,8 @@ final class SetupMenuController: NSObject, NSMenuDelegate {
     struct RuntimeState {
         var accessibilityTrusted: Bool
         var isSettingUp = false
-        var isMonitoring = false
+        var isAdMutingEnabled = false
+        var canRetryAdMuting = false
         var isQuitting = false
         var status = "Ready"
     }
@@ -13,6 +14,7 @@ final class SetupMenuController: NSObject, NSMenuDelegate {
     struct Actions {
         var setUp: (ChromeSetupMode) -> Void
         var toggleAdMuting: () -> Void
+        var retryAdMuting: () -> Void
         var editWebsite: () -> Void
         var openAccessibilitySettings: () -> Void
         var showAppInFinder: () -> Void
@@ -32,6 +34,7 @@ final class SetupMenuController: NSObject, NSMenuDelegate {
     private var statusItem: NSMenuItem?
     private var setupItem: NSMenuItem?
     private var mutingItem: NSMenuItem?
+    private var retryItem: NSMenuItem?
     private var editItem: NSMenuItem?
     private var recoveryItems: [NSMenuItem] = []
     private var displayItems: [String: NSMenuItem] = [:]
@@ -101,6 +104,7 @@ final class SetupMenuController: NSObject, NSMenuDelegate {
         menu.removeAllItems()
         displayItems.removeAll()
         recoveryItems.removeAll()
+        retryItem = nil
         statusItem = addNotice(Self.abbreviated(status), help: status)
         menu.addItem(.separator())
         menu.addItem(.sectionHeader(title: "Display"))
@@ -146,10 +150,16 @@ final class SetupMenuController: NSObject, NSMenuDelegate {
         menu.addItem(setup)
         setupItem = setup
         let muting = command("Ad Muting", action: #selector(toggleAdMuting))
-        muting.state = runtime.isMonitoring ? .on : .off
-        muting.isEnabled = canSelect && (runtime.isMonitoring || runtime.accessibilityTrusted)
+        muting.state = runtime.isAdMutingEnabled ? .on : .off
+        muting.isEnabled = canSelect && (runtime.isAdMutingEnabled || runtime.accessibilityTrusted)
         menu.addItem(muting)
         mutingItem = muting
+        if runtime.canRetryAdMuting {
+            let retry = command("Retry Ad Muting", action: #selector(retryAdMuting))
+            retry.isEnabled = canSelect && runtime.accessibilityTrusted
+            menu.addItem(retry)
+            retryItem = retry
+        }
         if !runtime.accessibilityTrusted {
             menu.addItem(.separator())
             let permission = command("Open Accessibility Settings…", action: #selector(openAccessibilitySettings))
@@ -178,8 +188,9 @@ final class SetupMenuController: NSObject, NSMenuDelegate {
         synchronizeLayoutSelection()
         setupItem?.isEnabled = canSelect && runtime.accessibilityTrusted && snapshot.target != nil && websiteError == nil
         setupItem?.toolTip = setupGuidance(runtime: runtime, snapshot: snapshot, websiteError: websiteError)
-        mutingItem?.state = runtime.isMonitoring ? .on : .off
-        mutingItem?.isEnabled = canSelect && (runtime.isMonitoring || runtime.accessibilityTrusted)
+        mutingItem?.state = runtime.isAdMutingEnabled ? .on : .off
+        mutingItem?.isEnabled = canSelect && (runtime.isAdMutingEnabled || runtime.accessibilityTrusted)
+        retryItem?.isEnabled = canSelect && runtime.accessibilityTrusted && runtime.canRetryAdMuting
         editItem?.isEnabled = canSelect
         for item in recoveryItems { item.isEnabled = canSelect }
     }
@@ -247,8 +258,16 @@ final class SetupMenuController: NSObject, NSMenuDelegate {
     @objc private func toggleAdMuting() {
         let runtime = readRuntime()
         guard !runtime.isSettingUp, !runtime.isQuitting,
-              runtime.isMonitoring || runtime.accessibilityTrusted else { refresh(); return }
+              runtime.isAdMutingEnabled || runtime.accessibilityTrusted else { refresh(); return }
         actions.toggleAdMuting()
+        refresh()
+    }
+
+    @objc private func retryAdMuting() {
+        let runtime = readRuntime()
+        guard !runtime.isSettingUp, !runtime.isQuitting, runtime.accessibilityTrusted,
+              runtime.canRetryAdMuting else { refresh(); return }
+        actions.retryAdMuting()
         refresh()
     }
 

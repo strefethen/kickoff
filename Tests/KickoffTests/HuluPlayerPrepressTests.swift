@@ -29,6 +29,11 @@ final class HuluPlayerPrepressTests: XCTestCase {
         let button2 = AXUIElementCreateApplication(602)
         let replacementButton1 = AXUIElementCreateApplication(603)
 
+        var pausedControls: Set<Int> = []
+        var pauseURL = true
+        var hiddenPlayControl = false
+        var ambiguousPlayControl = false
+        var hasPauseControl = false
         var providers: [PlayerAdDetection] = [.hulu, .hulu]
         var classes = ["pffOverlay-p7makt", "adBreakActive-wCpMdn"]
         var malformedClassList = false
@@ -84,7 +89,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
             values.firstIndex(where: { CFEqual($0, element) })
         }
         private func pageURL(_ index: Int) -> String {
-            if providers[index] == .peacock { return "https://www.peacocktv.com/watch/playback/vod/_/\(index + 1)?paused=true" }
+            if providers[index] == .peacock { return "https://www.peacocktv.com/watch/playback/vod/_/\(index + 1)" + (pauseURL ? "?paused=true" : "") }
             return duplicateURLs ? "https://www.hulu.com/watch/same" : "https://www.hulu.com/watch/\(index + 1)"
         }
         private func window(for index: Int) -> AXUIElement {
@@ -219,6 +224,16 @@ final class HuluPlayerPrepressTests: XCTestCase {
                     result.append(node(AXUIElementCreateApplication(414), role: kAXStaticTextRole, value: "26", depth: 1))
                 } else {
                     result.append(node(markers[index], role: kAXStaticTextRole, value: markerPresent[index] ? "Ad" : "", depth: 1))
+                }
+                if pausedControls.contains(index) {
+                    result.append(node(AXUIElementCreateApplication(701 + Int32(index)), role: kAXButtonRole,
+                                       title: "Play", depth: 1, hidden: hiddenPlayControl))
+                    if ambiguousPlayControl {
+                        result.append(node(AXUIElementCreateApplication(703), role: kAXButtonRole, title: "Play", depth: 1))
+                    }
+                    if hasPauseControl {
+                        result.append(node(AXUIElementCreateApplication(704), role: kAXButtonRole, title: "Pause", depth: 1))
+                    }
                 }
                 if rejectTraversalAfterPlayerScan == playerScanCount { rejectWindowTraversal = true }
                 return result
@@ -421,6 +436,58 @@ final class HuluPlayerPrepressTests: XCTestCase {
             chrome.missingAudioButtons = []
             XCTAssertEqual(try client.discoverPlayers().count, 2)
         }
+    }
+
+    func testPausedPeacockRequiresScopedPlayControlAndPausedURL() throws {
+        let chrome = FakeChrome()
+        chrome.providers = [.peacock, .peacock]
+        chrome.missingAudioButton = true
+        chrome.pausedControls = [0]
+        let client = ChromePlayerClient(chrome: chrome)
+        XCTAssertThrowsError(try client.discoverPlayers()) { XCTAssertTrue($0 is PlayerPlaybackPaused) }
+        for negative in 0..<5 {
+            chrome.hiddenPlayControl = negative == 0
+            chrome.ambiguousPlayControl = negative == 1
+            chrome.hasPauseControl = negative == 2
+            chrome.pauseURL = negative != 3
+            chrome.pausedControls = negative == 4 ? [] : [0]
+            XCTAssertThrowsError(try client.discoverPlayers()) { XCTAssertTrue($0 is ChromeAudioControlsUnavailable) }
+        }
+        XCTAssertEqual(chrome.presses, 0)
+    }
+
+    func testPausedClassificationValidatesAllUnavailableAreasAndPeers() throws {
+        for split in [false, true] {
+            let chrome = FakeChrome()
+            chrome.providers = [.peacock, .peacock]
+            chrome.pageCount = 2
+            chrome.split = split
+            chrome.missingAudioButton = true
+            chrome.pausedControls = [0]
+            let client = ChromePlayerClient(chrome: chrome)
+            XCTAssertThrowsError(try client.discoverPlayers()) { XCTAssertTrue($0 is ChromeAudioControlsUnavailable) }
+            chrome.pausedControls = [0, 1]
+            XCTAssertThrowsError(try client.discoverPlayers()) { XCTAssertTrue($0 is PlayerPlaybackPaused) }
+            chrome.conflictingAudioTabs = [1]
+            XCTAssertThrowsError(try client.discoverPlayers()) { XCTAssertTrue($0 is AccessibilityFailure) }
+        }
+    }
+
+    func testPausedURLCannotHideIncompleteOrNestedPlayerEvidence() throws {
+        let chrome = FakeChrome()
+        chrome.providers = [.peacock, .peacock]
+        chrome.missingAudioButton = true
+        chrome.pausedControls = [0]
+        chrome.incompletePlayerScan = true
+        XCTAssertThrowsError(try ChromePlayerClient(chrome: chrome).discoverPlayers()) { XCTAssertTrue($0 is AccessibilityFailure) }
+        chrome.incompletePlayerScan = false
+        chrome.contentNodesOverride = [
+            AccessibilityNode(element: chrome.root1, role: kAXGroupRole, title: "", nodeDescription: "", value: "", valueDescription: "", url: nil, domIdentifier: "mainContainer", hidden: false, depth: 0, domClassList: []),
+            AccessibilityNode(element: chrome.video1, role: kAXGroupRole, title: "", nodeDescription: "", value: "", valueDescription: "", url: nil, domIdentifier: "core-video-tape", hidden: false, depth: 1, domClassList: []),
+            AccessibilityNode(element: chrome.web2, role: "AXWebArea", title: "", nodeDescription: "", value: "", valueDescription: "", url: nil, domIdentifier: "", hidden: false, depth: 1, domClassList: []),
+            AccessibilityNode(element: chrome.button2, role: kAXButtonRole, title: "Play", nodeDescription: "", value: "", valueDescription: "", url: nil, domIdentifier: "", hidden: false, depth: 2, domClassList: []),
+        ]
+        XCTAssertThrowsError(try ChromePlayerClient(chrome: chrome).discoverPlayers()) { XCTAssertTrue($0 is ChromeAudioControlsUnavailable) }
     }
 
     func testPostpressConflictingStatusConvergesWithoutRetry() throws {

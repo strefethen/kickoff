@@ -139,7 +139,7 @@ final class SetupMenuControllerTests: XCTestCase {
         let originalLayout = controller.layoutMenu.items
         let muting = try XCTUnwrap(controller.menu.item(withTitle: "Ad Muting"))
         fixture.runtime.status = "Ad muting running"
-        fixture.runtime.isMonitoring = true
+        fixture.runtime.isAdMutingEnabled = true
         fixture.monitors.append(SetupMenuFixture.display("new", name: "New Display"))
         controller.refresh()
         XCTAssertEqual(controller.menu.items.count, original.count)
@@ -166,10 +166,32 @@ final class SetupMenuControllerTests: XCTestCase {
         controller.menuDidClose(controller.menu)
     }
 
+    func testEnabledFailureKeepsCheckboxAndExposesExplicitRetry() throws {
+        let fixture = SetupMenuFixture()
+        fixture.runtime.isAdMutingEnabled = true
+        fixture.runtime.canRetryAdMuting = true
+        fixture.runtime.status = "Ad muting stopped: unavailable"
+        let controller = fixture.controller()
+        XCTAssertEqual(controller.menu.item(withTitle: "Ad Muting")?.state, .on)
+        controller.menuWillOpen(controller.menu)
+        let retry = try XCTUnwrap(controller.menu.item(withTitle: "Retry Ad Muting"))
+        send(retry)
+        XCTAssertEqual(fixture.events, ["retry"])
+        XCTAssertEqual(controller.menu.item(withTitle: "Ad Muting")?.state, .on)
+        XCTAssertFalse(retry.isEnabled)
+        fixture.runtime.canRetryAdMuting = true
+        controller.refresh()
+        XCTAssertTrue(retry.isEnabled)
+        send(try XCTUnwrap(controller.menu.item(withTitle: "Ad Muting")))
+        XCTAssertFalse(fixture.runtime.isAdMutingEnabled)
+        XCTAssertEqual(controller.menu.item(withTitle: "Ad Muting")?.state, .off)
+        controller.menuDidClose(controller.menu)
+    }
+
     func testAdMutingAndSecondaryActionRoutes() throws {
         let fixture = SetupMenuFixture()
         fixture.runtime.accessibilityTrusted = false
-        fixture.runtime.isMonitoring = true
+        fixture.runtime.isAdMutingEnabled = true
         let controller = fixture.controller()
         send(try XCTUnwrap(controller.menu.item(withTitle: "Ad Muting")))
         XCTAssertEqual(fixture.events, ["toggle"])
@@ -240,7 +262,8 @@ private final class SetupMenuFixture {
     func controller() -> SetupMenuController {
         SetupMenuController(selection: selection, preferences: preferences, readRuntime: { [unowned self] in self.runtime }, actions: .init(
             setUp: { [unowned self] mode in self.setups.append(mode); self.runtime.isSettingUp = true },
-            toggleAdMuting: { [unowned self] in self.events.append("toggle"); self.runtime.isMonitoring.toggle() },
+            toggleAdMuting: { [unowned self] in self.events.append("toggle"); self.runtime.isAdMutingEnabled.toggle() },
+            retryAdMuting: { [unowned self] in self.events.append("retry"); self.runtime.canRetryAdMuting = false },
             editWebsite: { [unowned self] in self.events.append("edit"); self.edit?() },
             openAccessibilitySettings: { [unowned self] in self.events.append("permission") },
             showAppInFinder: { [unowned self] in self.events.append("finder") },

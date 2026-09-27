@@ -4,6 +4,8 @@ enum AdMonitorStatus: Equatable {
     case stopped
     case scanning
     case waitingForPlayers
+    case waitingForPlayback
+    case audioControlsUnavailable(retryIntervalSeconds: Int)
     case waitingForAudioControls(secondsRemaining: Int)
     case monitoring(players: Int, newlyMuted: Int, newlyUnmuted: Int)
     case failed(String)
@@ -16,6 +18,10 @@ enum AdMonitorStatus: Equatable {
             return "Checking Chrome players…"
         case .waitingForPlayers:
             return "Ad muting — waiting for a Chrome player"
+        case .waitingForPlayback:
+            return "Ad muting — waiting for playback to resume"
+        case let .audioControlsUnavailable(retryIntervalSeconds):
+            return "Ad muting — audio controls unavailable; checking every \(retryIntervalSeconds)s"
         case let .waitingForAudioControls(secondsRemaining):
             return "Ad muting — waiting for audio controls (\(secondsRemaining)s left)"
         case let .monitoring(players, newlyMuted, newlyUnmuted):
@@ -61,14 +67,18 @@ final class AdMonitor {
     private let playerFactory: PlayerFactory
     private let audioAvailabilityTimeout: TimeInterval
     private let monotonicTime: () -> TimeInterval
+    private let audioRetryInterval: TimeInterval
     private enum PassResult {
         case complete(players: Int, newlyMuted: Int, newlyUnmuted: Int)
         case waitingForAudio(remaining: TimeInterval)
+        case waitingForPlayback
+        case audioRetry
     }
     private final class RunContext {
         let player: PlayerControlling
         let policy = AdAudioPolicy()
         var audioUnavailableSince: TimeInterval?
+        var isSlowAudioRetry = false
 
         init(player: PlayerControlling) { self.player = player }
     }
@@ -89,12 +99,15 @@ final class AdMonitor {
         operationQueue: DispatchQueue,
         interval: TimeInterval = 2.5,
         audioAvailabilityTimeout: TimeInterval = 30,
+        audioRetryInterval: TimeInterval = 30,
         monotonicTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         playerFactory: @escaping PlayerFactory
     ) {
         self.operationQueue = operationQueue
         self.interval = interval
         precondition(audioAvailabilityTimeout.isFinite && audioAvailabilityTimeout > 0)
+        precondition(audioRetryInterval.isFinite && audioRetryInterval > 0)
+        self.audioRetryInterval = audioRetryInterval
         self.playerFactory = playerFactory
         self.audioAvailabilityTimeout = audioAvailabilityTimeout
         self.monotonicTime = monotonicTime
@@ -147,28 +160,45 @@ final class AdMonitor {
         do {
             try token.check()
             let context = try context(for: run)
-            if let since = context.audioUnavailableSince {
-                try checkAudioDeadline(since: since)
+            if !context.isSlowAudioRetry, let since = context.audioUnavailableSince,
+               audioTimeRemaining(since: since) <= 0 {
+                context.isSlowAudioRetry = true
+                context.policy.interruptCompleteAbsenceScans()
+                completePass(run: run, token: token, result: .audioRetry)
+                return
             }
             let players: [PlayerState]
             do {
                 players = try context.player.discoverPlayers()
+            } catch is PlayerPlaybackPaused {
+                try token.check()
+                context.policy.interruptCompleteAbsenceScans()
+                context.audioUnavailableSince = nil
+                context.isSlowAudioRetry = false
+                completePass(run: run, token: token, result: .waitingForPlayback)
+                return
             } catch is ChromeAudioControlsUnavailable {
                 // Only discovery can wait: no action or readback failure is replayed.
                 try token.check()
                 context.policy.interruptCompleteAbsenceScans()
                 let since = context.audioUnavailableSince ?? monotonicTime()
                 context.audioUnavailableSince = since
-                let remaining = try checkAudioDeadline(since: since)
-                DispatchQueue.main.async { [weak self] in
-                    self?.finishPass(run: run, token: token,
-                                     result: .success(.waitingForAudio(remaining: remaining)))
+                let remaining = audioTimeRemaining(since: since)
+                if context.isSlowAudioRetry || remaining <= 0 {
+                    context.isSlowAudioRetry = true
+                    completePass(run: run, token: token, result: .audioRetry)
+                } else {
+                    completePass(run: run, token: token, result: .waitingForAudio(remaining: remaining))
                 }
                 return
             }
             try token.check()
-            if let since = context.audioUnavailableSince {
-                try checkAudioDeadline(since: since)
+            if !context.isSlowAudioRetry, let since = context.audioUnavailableSince,
+               audioTimeRemaining(since: since) <= 0 {
+                context.isSlowAudioRetry = true
+                context.policy.interruptCompleteAbsenceScans()
+                completePass(run: run, token: token, result: .audioRetry)
+                return
             }
             let expected = players.map(\.identity)
             let restoreCandidates = context.policy.restoreCandidates(afterCompleteScan: players)
@@ -198,6 +228,7 @@ final class AdMonitor {
             }
             try token.check()
             context.audioUnavailableSince = nil
+            context.isSlowAudioRetry = false
             DispatchQueue.main.async { [weak self] in
                 self?.finishPass(
                     run: run,
@@ -210,6 +241,12 @@ final class AdMonitor {
             DispatchQueue.main.async { [weak self] in
                 self?.finishPass(run: run, token: token, result: .failure(error))
             }
+        }
+    }
+
+    private func completePass(run: UInt64, token: MonitorCancellation, result: PassResult) {
+        DispatchQueue.main.async { [weak self] in
+            self?.finishPass(run: run, token: token, result: .success(result))
         }
     }
 
@@ -227,6 +264,12 @@ final class AdMonitor {
                 : .monitoring(players: players, newlyMuted: newlyMuted, newlyUnmuted: newlyUnmuted))
             // Schedule only after the completed pass, so polls never overlap.
             enqueuePass(run: run, token: token, delay: interval)
+        case .success(.waitingForPlayback):
+            publish(.waitingForPlayback)
+            enqueuePass(run: run, token: token, delay: interval)
+        case .success(.audioRetry):
+            publish(.audioControlsUnavailable(retryIntervalSeconds: Int(ceil(audioRetryInterval))))
+            enqueuePass(run: run, token: token, delay: audioRetryInterval)
         case let .success(.waitingForAudio(remaining)):
             publish(.waitingForAudioControls(secondsRemaining: Int(ceil(remaining))))
             enqueuePass(run: run, token: token, delay: min(interval, remaining))
@@ -238,13 +281,8 @@ final class AdMonitor {
         }
     }
 
-    @discardableResult
-    private func checkAudioDeadline(since: TimeInterval) throws -> TimeInterval {
-        let remaining = audioAvailabilityTimeout - (monotonicTime() - since)
-        guard remaining > 0 else {
-            throw AccessibilityFailure("Chrome audio controls stayed unavailable for \(Int(ceil(audioAvailabilityTimeout))) seconds. Resume playback; if controls remain missing, enable chrome://flags/#enable-tab-audio-muting and relaunch Chrome, then start Ad Muting again.")
-        }
-        return remaining
+    private func audioTimeRemaining(since: TimeInterval) -> TimeInterval {
+        audioAvailabilityTimeout - (monotonicTime() - since)
     }
 
     private func context(for run: UInt64) throws -> RunContext {

@@ -32,7 +32,21 @@ final class ChromePlayerClient: PlayerControlling {
     func discoverPlayers() throws -> [PlayerState] {
         try retryInvalidRead {
             let areas = try currentWatchAreas()
-            let audioBindings = try tabAudio.bind(areas)
+            let audioBindings: [ChromeTabAudioBinding]
+            do {
+                audioBindings = try tabAudio.bind(areas)
+            } catch let unavailable as ChromeAudioControlsUnavailable {
+                // Every unavailable area must carry complete, scoped pause evidence.
+                // Binding conflicts are validated before this recoverable classification.
+                if !unavailable.watchAreas.isEmpty,
+                   try unavailable.watchAreas.allSatisfy({ area in
+                       guard let provider = PlayerAdDetection.provider(for: area.url) else { return false }
+                       return try provider.isPlaybackPaused(in: area.webArea, url: area.url, chrome: chrome)
+                   }) {
+                    throw PlayerPlaybackPaused()
+                }
+                throw unavailable
+            }
             guard audioBindings.count == areas.count else {
                 throw AccessibilityFailure("Chrome did not produce one native tab-audio binding per supported watch area.")
             }

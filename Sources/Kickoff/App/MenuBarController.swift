@@ -22,13 +22,17 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             guard let self else { return .init(accessibilityTrusted: false, isQuitting: true) }
             return .init(accessibilityTrusted: AXIsProcessTrusted(),
                          isSettingUp: self.operationController.isSettingUp,
-                         isMonitoring: self.operationController.isMonitoring,
+                         isAdMutingEnabled: self.operationController.isAdMutingEnabled,
+                         canRetryAdMuting: self.operationController.canRetryAdMuting,
                          isQuitting: self.operationController.isQuitting,
                          status: self.operationController.status)
         },
         actions: .init(
             setUp: { [weak self] mode in self?.operationController.startSetup(mode: mode) },
             toggleAdMuting: { [weak self] in self?.toggleAdMuting() },
+            retryAdMuting: { [weak self] in
+                self?.operationController.retryAdMuting(accessibilityTrusted: AXIsProcessTrusted())
+            },
             editWebsite: { [weak self] in self?.settingsWindowController.show() },
             openAccessibilitySettings: { [weak self] in self?.openAccessibilitySettings() },
             showAppInFinder: { [weak self] in self?.showAppInFinder() },
