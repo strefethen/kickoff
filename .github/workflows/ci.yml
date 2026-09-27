@@ -24,5 +24,5 @@ jobs:
       - name: Run tests
         run: swift test
 
-      - name: Build local app bundle
-        run: ./build-app.sh
+      - name: Build release product
+        run: swift build --configuration release --product Kickoff --arch arm64
