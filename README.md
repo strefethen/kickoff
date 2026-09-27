@@ -4,8 +4,8 @@
 
 # Kickoff
 
-Kickoff is a native macOS menu bar app that sets up two or four Google Chrome panes on a chosen monitor.
-It mutes ads when detectable.
+Kickoff is a native macOS menu bar app that sets up one, two, or four Google Chrome panes on a chosen monitor.
+It mutes detectable ads on Hulu and Peacock (experimental).
 
 ![Four football games in Chrome](Resources/Screenshot.webp)
 
@@ -37,9 +37,12 @@ Maintainer release instructions are in [docs/releasing.md](docs/releasing.md).
 
 ## Use Kickoff
 
-1. Open Kickoff’s menu bar menu, then choose a display from **Monitor**.
-2. Choose **Settings…**, enter the **Website URL**, and select **Save**.
-3. Choose **Set Up Split Screen on [monitor]** or **Set Up Quad Screen on [monitor]**.
+<img src="Resources/Menu.webp" width="385" alt="Kickoff menu with display selection, layout icons, website URL, and Ad Muting enabled">
+
+1. Open Kickoff’s menu and choose a **Display**.
+2. Choose a **Layout**: single, split, or quad.
+3. Use **Edit Website…** to change the URL shown in the menu.
+4. Choose **Set Up Chrome**.
 
 Kickoff uses the selected monitor for future setup runs. If that monitor is unavailable, it chooses an available monitor without replacing the saved preference.
 
