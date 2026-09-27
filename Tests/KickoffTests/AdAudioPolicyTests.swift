@@ -40,4 +40,16 @@ final class AdAudioPolicyTests: XCTestCase {
         XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: []).isEmpty)
         XCTAssertFalse(policy.owns(identity))
     }
+    func testIncompleteScanPreservesOwnershipButBreaksAbsenceStreak() {
+        let identity = PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/owned")
+        let policy = AdAudioPolicy()
+        policy.claimAfterVerifiedMute(identity)
+        let absent = state(identity, marked: false, muted: true)
+        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [absent]).isEmpty)
+        policy.interruptCompleteAbsenceScans()
+        XCTAssertTrue(policy.owns(identity))
+        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [absent]).isEmpty)
+        XCTAssertEqual(policy.restoreCandidates(afterCompleteScan: [absent]), [identity])
+    }
+
 }

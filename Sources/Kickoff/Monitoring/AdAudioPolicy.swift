@@ -36,6 +36,13 @@ final class AdAudioPolicy {
         return candidates
     }
 
+    /// An incomplete scan breaks absence evidence without relinquishing an owned mute.
+    func interruptCompleteAbsenceScans() {
+        for identity in leases.keys {
+            leases[identity]?.consecutiveCompleteAbsenceScans = 0
+        }
+    }
+
     func recordRestore(_ outcome: UnmuteAfterAdOutcome, for identity: PlayerIdentity) {
         switch outcome {
         case .unmutedAndVerified, .alreadyUnmuted:

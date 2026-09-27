@@ -1,6 +1,11 @@
 import ApplicationServices
 import Foundation
 
+/// Discovery could not establish audio state; no action has been attempted.
+struct ChromeAudioControlsUnavailable: Error, CustomStringConvertible {
+    let description: String
+}
+
 enum ChromeTabAudioState: Equatable {
     case playing
     case muted
@@ -40,7 +45,7 @@ struct ChromeTabAudioBinding {
 /// browser-level audio mutation/readback contract.
 final class ChromeTabAudioClient {
     private enum SplitSide: Hashable { case left, right }
-    private struct AudioStatePending: Error {}
+    private enum AudioStatePending: Error { case missing, conflicting, changing }
 
     private struct TabCandidate {
         let element: AXUIElement
@@ -123,7 +128,7 @@ final class ChromeTabAudioClient {
         let first = try audioState(of: binding.tab)
         let second = try audioState(of: binding.tab)
         guard first == second else {
-            throw AudioStatePending()
+            throw AudioStatePending.changing
         }
         return first
     }
@@ -205,17 +210,20 @@ final class ChromeTabAudioClient {
         peerArea: AXUIElement?,
         peerTab: AXUIElement?
     ) throws -> ChromeTabAudioBinding {
-        guard let button = tab.button else {
-            throw AccessibilityFailure("The selected Chrome tab does not expose a native Mute tab or Unmute tab button. Set chrome://flags/#enable-tab-audio-muting to Enabled, relaunch Chrome, and start Ad Muting again.")
-        }
         guard titleMatches(tab.title, webAreaTitle: area.title) else {
             throw AccessibilityFailure("Chrome native tab title does not match its candidate supported player web area title.")
         }
+        // Conflicting state remains terminal even if the button is also absent.
         let state: ChromeTabAudioState
         do {
             state = try audioState(title: tab.title, description: tab.nodeDescription)
+        } catch AudioStatePending.missing {
+            throw ChromeAudioControlsUnavailable(description: "Chrome is not reporting tab audio state.")
         } catch is AudioStatePending {
-            throw AccessibilityFailure("Chrome native tab has missing or conflicting Audio playing/Audio muted state.")
+            throw AccessibilityFailure("Chrome native tab has conflicting Audio playing/Audio muted state.")
+        }
+        guard let button = tab.button else {
+            throw ChromeAudioControlsUnavailable(description: "Chrome is not exposing a native tab audio button.")
         }
         return ChromeTabAudioBinding(
             window: area.window,
@@ -278,7 +286,8 @@ final class ChromeTabAudioClient {
             if token == "Audio muted" { return .muted }
             return nil
         })
-        guard states.count == 1, let state = states.first else { throw AudioStatePending() }
+        guard !states.isEmpty else { throw AudioStatePending.missing }
+        guard states.count == 1, let state = states.first else { throw AudioStatePending.conflicting }
         return state
     }
 

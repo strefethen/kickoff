@@ -58,6 +58,9 @@ final class HuluPlayerPrepressTests: XCTestCase {
         var buttonEnabled = true
         var actionAdvertised = true
         var mutationChangesState = true
+        var missingAudioButton = false
+        var wrongTabTitle = false
+        var persistentConflictingAudio = false
         var persistentUnknownAudio = false
         var postpressUnknownAudio = false
         var transientConflictReads = 0
@@ -100,7 +103,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
                 }
             }
             if let index = index(element, in: tabs) {
-                if name == kAXChildrenAttribute { return [buttons[index]] as CFArray }
+                if name == kAXChildrenAttribute { return (missingAudioButton ? [] : [buttons[index]]) as CFArray }
                 if name == "AXSelected" { return selected[index] as CFBoolean }
             }
             if let index = index(element, in: buttons) {
@@ -154,11 +157,12 @@ final class HuluPlayerPrepressTests: XCTestCase {
         private func pageTitle(_ index: Int) -> String { providers[index] == .hulu ? "Hulu | Watch" : "Peacock | Watch" }
 
         private func tabTitle(_ index: Int, forDescription: Bool) -> String {
-            if persistentUnknownAudio { return forDescription ? "" : "Hulu | Watch - Memory usage - 100 MB" }
+            if wrongTabTitle { return "Other page - Audio playing" }
+            if persistentUnknownAudio { return forDescription ? "" : "\(pageTitle(index)) - Memory usage - 100 MB" }
             let actual = audioState[index]
             let reported: ChromeTabAudioState
-            if forDescription, transientConflictReads > 0 {
-                transientConflictReads -= 1
+            if forDescription, persistentConflictingAudio || transientConflictReads > 0 {
+                if transientConflictReads > 0 { transientConflictReads -= 1 }
                 reported = actual == .muted ? .playing : .muted
             } else {
                 reported = actual
@@ -348,6 +352,32 @@ final class HuluPlayerPrepressTests: XCTestCase {
         let noActionPlayer = try XCTUnwrap(noActionClient.discoverPlayers().first)
         XCTAssertThrowsError(try noActionClient.muteIfCurrentlyMarkedAd(noActionPlayer.identity, expectedPlayers: [noActionPlayer.identity], isCancelled: { false }))
         XCTAssertEqual(noAction.presses, 0)
+    }
+
+
+    func testOnlyMissingDiscoveryControlsAreRecoverable() throws {
+        for missingButton in [false, true] {
+            let chrome = FakeChrome()
+            chrome.providers = [.peacock, .hulu]
+            chrome.missingAudioButton = missingButton
+            chrome.persistentUnknownAudio = !missingButton
+            XCTAssertThrowsError(try ChromePlayerClient(chrome: chrome).discoverPlayers()) { error in
+                XCTAssertTrue(error is ChromeAudioControlsUnavailable)
+            }
+            XCTAssertEqual(chrome.presses, 0)
+        }
+        let conflicting = FakeChrome()
+        conflicting.persistentConflictingAudio = true
+        conflicting.missingAudioButton = true
+        XCTAssertThrowsError(try ChromePlayerClient(chrome: conflicting).discoverPlayers()) { error in
+            XCTAssertFalse(error is ChromeAudioControlsUnavailable)
+        }
+        let wrong = FakeChrome()
+        wrong.wrongTabTitle = true
+        wrong.missingAudioButton = true
+        XCTAssertThrowsError(try ChromePlayerClient(chrome: wrong).discoverPlayers()) { error in
+            XCTAssertFalse(error is ChromeAudioControlsUnavailable)
+        }
     }
 
     func testPostpressConflictingStatusConvergesWithoutRetry() throws {

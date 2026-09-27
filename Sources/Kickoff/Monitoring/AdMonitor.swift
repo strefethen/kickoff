@@ -4,6 +4,7 @@ enum AdMonitorStatus: Equatable {
     case stopped
     case scanning
     case waitingForPlayers
+    case waitingForAudioControls(secondsRemaining: Int)
     case monitoring(players: Int, newlyMuted: Int, newlyUnmuted: Int)
     case failed(String)
 
@@ -15,6 +16,8 @@ enum AdMonitorStatus: Equatable {
             return "Checking Chrome players…"
         case .waitingForPlayers:
             return "Ad muting — waiting for a Chrome player"
+        case let .waitingForAudioControls(secondsRemaining):
+            return "Ad muting — waiting for audio controls (\(secondsRemaining)s left)"
         case let .monitoring(players, newlyMuted, newlyUnmuted):
             var changes: [String] = []
             if newlyMuted > 0 { changes.append("muted \(newlyMuted) ad\(newlyMuted == 1 ? "" : "s")") }
@@ -56,9 +59,16 @@ final class AdMonitor {
     private let operationQueue: DispatchQueue
     private let interval: TimeInterval
     private let playerFactory: PlayerFactory
+    private let audioAvailabilityTimeout: TimeInterval
+    private let monotonicTime: () -> TimeInterval
+    private enum PassResult {
+        case complete(players: Int, newlyMuted: Int, newlyUnmuted: Int)
+        case waitingForAudio(remaining: TimeInterval)
+    }
     private final class RunContext {
         let player: PlayerControlling
         let policy = AdAudioPolicy()
+        var audioUnavailableSince: TimeInterval?
 
         init(player: PlayerControlling) { self.player = player }
     }
@@ -78,11 +88,16 @@ final class AdMonitor {
     init(
         operationQueue: DispatchQueue,
         interval: TimeInterval = 2.5,
+        audioAvailabilityTimeout: TimeInterval = 30,
+        monotonicTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         playerFactory: @escaping PlayerFactory
     ) {
         self.operationQueue = operationQueue
         self.interval = interval
+        precondition(audioAvailabilityTimeout.isFinite && audioAvailabilityTimeout > 0)
         self.playerFactory = playerFactory
+        self.audioAvailabilityTimeout = audioAvailabilityTimeout
+        self.monotonicTime = monotonicTime
     }
 
     func start() {
@@ -132,8 +147,29 @@ final class AdMonitor {
         do {
             try token.check()
             let context = try context(for: run)
-            let players = try context.player.discoverPlayers()
+            if let since = context.audioUnavailableSince {
+                try checkAudioDeadline(since: since)
+            }
+            let players: [PlayerState]
+            do {
+                players = try context.player.discoverPlayers()
+            } catch is ChromeAudioControlsUnavailable {
+                // Only discovery can wait: no action or readback failure is replayed.
+                try token.check()
+                context.policy.interruptCompleteAbsenceScans()
+                let since = context.audioUnavailableSince ?? monotonicTime()
+                context.audioUnavailableSince = since
+                let remaining = try checkAudioDeadline(since: since)
+                DispatchQueue.main.async { [weak self] in
+                    self?.finishPass(run: run, token: token,
+                                     result: .success(.waitingForAudio(remaining: remaining)))
+                }
+                return
+            }
             try token.check()
+            if let since = context.audioUnavailableSince {
+                try checkAudioDeadline(since: since)
+            }
             let expected = players.map(\.identity)
             let restoreCandidates = context.policy.restoreCandidates(afterCompleteScan: players)
             var newlyMuted = 0
@@ -161,11 +197,12 @@ final class AdMonitor {
                 if outcome == .unmutedAndVerified { newlyUnmuted += 1 }
             }
             try token.check()
+            context.audioUnavailableSince = nil
             DispatchQueue.main.async { [weak self] in
                 self?.finishPass(
                     run: run,
                     token: token,
-                    result: .success((players.count, newlyMuted, newlyUnmuted))
+                    result: .success(.complete(players: players.count, newlyMuted: newlyMuted, newlyUnmuted: newlyUnmuted))
                 )
             }
         } catch {
@@ -179,27 +216,35 @@ final class AdMonitor {
     private func finishPass(
         run: UInt64,
         token: MonitorCancellation,
-        result: Result<(players: Int, newlyMuted: Int, newlyUnmuted: Int), Error>
+        result: Result<PassResult, Error>
     ) {
         dispatchPrecondition(condition: .onQueue(.main))
         guard generation == run, isRunning, cancellation === token, !token.isCancelled else { return }
         switch result {
-        case let .success(summary):
-            publish(summary.players == 0
+        case let .success(.complete(players, newlyMuted, newlyUnmuted)):
+            publish(players == 0
                 ? .waitingForPlayers
-                : .monitoring(
-                    players: summary.players,
-                    newlyMuted: summary.newlyMuted,
-                    newlyUnmuted: summary.newlyUnmuted
-                ))
+                : .monitoring(players: players, newlyMuted: newlyMuted, newlyUnmuted: newlyUnmuted))
             // Schedule only after the completed pass, so polls never overlap.
             enqueuePass(run: run, token: token, delay: interval)
+        case let .success(.waitingForAudio(remaining)):
+            publish(.waitingForAudioControls(secondsRemaining: Int(ceil(remaining))))
+            enqueuePass(run: run, token: token, delay: min(interval, remaining))
         case let .failure(error):
             isRunning = false
             cancellation = nil
             scheduledPass = nil
             publish(.failed(Self.actionableMessage(for: error)))
         }
+    }
+
+    @discardableResult
+    private func checkAudioDeadline(since: TimeInterval) throws -> TimeInterval {
+        let remaining = audioAvailabilityTimeout - (monotonicTime() - since)
+        guard remaining > 0 else {
+            throw AccessibilityFailure("Chrome audio controls stayed unavailable for \(Int(ceil(audioAvailabilityTimeout))) seconds. Resume playback; if controls remain missing, enable chrome://flags/#enable-tab-audio-muting and relaunch Chrome, then start Ad Muting again.")
+        }
+        return remaining
     }
 
     private func context(for run: UInt64) throws -> RunContext {
