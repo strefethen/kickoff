@@ -18,11 +18,28 @@ struct KickoffMain {
     }
 
     private static func runMenuBarApp() {
+        // This also recognizes an older build that predates the shared lock.
+        guard !NSRunningApplication.runningApplications(withBundleIdentifier: AppPreferences.suiteName)
+            .contains(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) else {
+            FileHandle.standardError.write(Data("Kickoff is already running.\n".utf8))
+            return
+        }
+        let instance: ApplicationInstanceLock
+        do {
+            guard let acquired = try ApplicationInstanceLock.acquire() else {
+                FileHandle.standardError.write(Data("Kickoff is already running.\n".utf8))
+                return
+            }
+            instance = acquired
+        } catch {
+            FileHandle.standardError.write(Data("Kickoff could not reserve its app instance: \(error.localizedDescription)\n".utf8))
+            exit(1)
+        }
         let app = NSApplication.shared
         let delegate = MenuBarController()
         app.setActivationPolicy(.accessory)
         app.delegate = delegate
-        withExtendedLifetime(delegate) { app.run() }
+        withExtendedLifetime((instance, delegate)) { app.run() }
     }
 
     private static func runCommand(_ arguments: [String]) throws {

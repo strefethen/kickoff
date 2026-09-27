@@ -33,6 +33,8 @@ cd kickoff
 open build/Kickoff.app
 ```
 
+Kickoff permits one menu-bar instance per user. Launching another copy exits before starting a second ad monitor. The instance lock is released automatically when the app exits, including after a crash. Command-line diagnostics remain available while the app is running.
+
 Maintainer release instructions are in [docs/releasing.md](docs/releasing.md).
 
 ## Use Kickoff
