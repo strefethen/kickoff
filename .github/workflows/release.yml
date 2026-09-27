@@ -106,4 +106,4 @@ jobs:
             --draft \
             --verify-tag \
             --title "Kickoff $release_version" \
-            --generate-notes\n
+            --generate-notes

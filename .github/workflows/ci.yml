@@ -25,4 +25,4 @@ jobs:
         run: swift test
 
       - name: Build release product
-        run: swift build --configuration release --product Kickoff --arch arm64\n
+        run: swift build --configuration release --product Kickoff --arch arm64
