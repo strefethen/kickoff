@@ -1,6 +1,6 @@
 # AdMarker microbenchmark
 
-This harness compiles the actual `HuluPlayerTypes.swift` and
+This harness compiles the actual `PlayerTypes.swift` and
 `AccessibilityTypes.swift` sources with Swift release optimization. It does not
 copy or replace the production matcher. Inputs are synthetic, and results cannot
 be interpreted as whole-app or live Hulu performance.

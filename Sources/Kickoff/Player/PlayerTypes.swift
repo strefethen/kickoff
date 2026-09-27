@@ -1,12 +1,12 @@
 import Foundation
 
-struct HuluPlayerIdentity: Hashable {
+struct PlayerIdentity: Hashable {
     let token: UUID
     let url: String
 }
 
-struct HuluPlayerState: Equatable {
-    let identity: HuluPlayerIdentity
+struct PlayerState: Equatable {
+    let identity: PlayerIdentity
     let windowIndex: Int
     let muted: Bool
     let audioDescription: String
@@ -35,16 +35,16 @@ enum UnmuteAfterAdOutcome: Equatable {
     case markerReappeared
 }
 
-protocol HuluPlayerControlling: AnyObject {
-    func discoverPlayers() throws -> [HuluPlayerState]
+protocol PlayerControlling: AnyObject {
+    func discoverPlayers() throws -> [PlayerState]
     func muteIfCurrentlyMarkedAd(
-        _ player: HuluPlayerIdentity,
-        expectedPlayers: [HuluPlayerIdentity],
+        _ player: PlayerIdentity,
+        expectedPlayers: [PlayerIdentity],
         isCancelled: () -> Bool
     ) throws -> MuteMarkedAdOutcome
     func unmuteIfAdMarkerAbsent(
-        _ player: HuluPlayerIdentity,
-        expectedPlayers: [HuluPlayerIdentity],
+        _ player: PlayerIdentity,
+        expectedPlayers: [PlayerIdentity],
         isCancelled: () -> Bool
     ) throws -> UnmuteAfterAdOutcome
 }

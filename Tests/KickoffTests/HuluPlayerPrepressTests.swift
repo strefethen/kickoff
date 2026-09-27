@@ -4,7 +4,7 @@ import XCTest
 @testable import Kickoff
 
 final class HuluPlayerPrepressTests: XCTestCase {
-    private final class FakeChrome: ChromeAccessibilityAccessing {
+    final class FakeChrome: ChromeAccessibilityAccessing {
         let pid: pid_t = 42
         let application = AXUIElementCreateApplication(42)
         let window1 = AXUIElementCreateApplication(101)
@@ -17,6 +17,11 @@ final class HuluPlayerPrepressTests: XCTestCase {
         let root2 = AXUIElementCreateApplication(302)
         let marker1 = AXUIElementCreateApplication(401)
         let marker2 = AXUIElementCreateApplication(402)
+        let video1 = AXUIElementCreateApplication(411)
+        let video2 = AXUIElementCreateApplication(412)
+        let ancestor1 = AXUIElementCreateApplication(421)
+        let videoAncestor1 = AXUIElementCreateApplication(431)
+        let videoAncestor2 = AXUIElementCreateApplication(432)
         let tab1 = AXUIElementCreateApplication(501)
         let tab2 = AXUIElementCreateApplication(502)
         let replacementTab1 = AXUIElementCreateApplication(503)
@@ -24,6 +29,22 @@ final class HuluPlayerPrepressTests: XCTestCase {
         let button2 = AXUIElementCreateApplication(602)
         let replacementButton1 = AXUIElementCreateApplication(603)
 
+        var providers: [PlayerAdDetection] = [.hulu, .hulu]
+        var classes = ["pffOverlay-p7makt", "adBreakActive-wCpMdn"]
+        var malformedClassList = false
+        var classReadFailure = false
+        var incompletePlayerScan = false
+        var rootHidden = false
+        var markerHidden = false
+        var ancestorHidden = false
+        var videoIdentifier = "core-video-shaka"
+        var videoCount = 1
+        var videoHidden = false
+        var videoAncestorHidden = [false, false]
+        var areaNodesOverride: [AccessibilityNode]?
+        var contentNodesOverride: [AccessibilityNode]?
+        var onClassRead: (() -> Void)?
+        private(set) var classReads = 0
         var pageCount = 1
         var split = false
         var duplicateURLs = false
@@ -57,7 +78,8 @@ final class HuluPlayerPrepressTests: XCTestCase {
             values.firstIndex(where: { CFEqual($0, element) })
         }
         private func pageURL(_ index: Int) -> String {
-            duplicateURLs ? "https://www.hulu.com/watch/same" : "https://www.hulu.com/watch/\(index + 1)"
+            if providers[index] == .peacock { return "https://www.peacocktv.com/watch/playback/vod/_/\(index + 1)?paused=true" }
+            return duplicateURLs ? "https://www.hulu.com/watch/same" : "https://www.hulu.com/watch/\(index + 1)"
         }
         private func window(for index: Int) -> AXUIElement {
             if split || index == 0 { return replaceWindow1 ? replacementWindow1 : window1 }
@@ -85,8 +107,24 @@ final class HuluPlayerPrepressTests: XCTestCase {
                 if name == kAXParentAttribute { return tabs[index] }
                 if name == kAXEnabledAttribute { return buttonEnabled as CFBoolean }
             }
-            if index(element, in: roots) != nil || index(element, in: markers) != nil, name == "AXHidden" {
-                return kCFBooleanFalse
+            if index(element, in: [video1, video2]) != nil {
+                if name == "AXHidden" { return videoHidden as CFBoolean }
+            }
+            if let index = index(element, in: [videoAncestor1, videoAncestor2]), name == "AXHidden" {
+                return videoAncestorHidden[index] as CFBoolean
+            }
+            if CFEqual(element, ancestor1), name == "AXHidden" { return ancestorHidden as CFBoolean }
+            if index(element, in: roots) != nil, name == "AXHidden" { return rootHidden as CFBoolean }
+            if let index = index(element, in: markers) {
+                if name == "AXHidden" { return markerHidden as CFBoolean }
+                if name == "AXDOMClassList", providers[index] == .peacock {
+                    classReads += 1
+                    onClassRead?()
+                    onClassRead = nil
+                    if classReadFailure { throw AccessibilityFailure("class list read failed", axError: .cannotComplete) }
+                    if malformedClassList { return "not an AX class list" as CFString }
+                    return (markerPresent[index] ? classes : ["pffOverlay-newHash"]) as CFArray
+                }
             }
             return nil
         }
@@ -101,8 +139,9 @@ final class HuluPlayerPrepressTests: XCTestCase {
                 if name == kAXRoleAttribute { return kAXButtonRole }
                 if name == kAXTitleAttribute { return "Mute tab" }
             }
+            if index(element, in: [video1, video2]) != nil, name == "AXDOMIdentifier" { return videoIdentifier }
             if let index = index(element, in: markers) {
-                if name == kAXRoleAttribute { return kAXStaticTextRole }
+                if name == kAXRoleAttribute { return providers[index] == .hulu ? kAXStaticTextRole : kAXGroupRole }
                 if name == kAXValueAttribute {
                     onMarkerValueRead?()
                     onMarkerValueRead = nil
@@ -111,6 +150,8 @@ final class HuluPlayerPrepressTests: XCTestCase {
             }
             return ""
         }
+
+        private func pageTitle(_ index: Int) -> String { providers[index] == .hulu ? "Hulu | Watch" : "Peacock | Watch" }
 
         private func tabTitle(_ index: Int, forDescription: Bool) -> String {
             if persistentUnknownAudio { return forDescription ? "" : "Hulu | Watch - Memory usage - 100 MB" }
@@ -124,7 +165,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
             }
             let audio = reported == .muted ? "Audio muted" : "Audio playing"
             let side = split ? (index == 0 ? " - Left view" : " - Right view") : ""
-            return forDescription ? audio : "Hulu | Watch\(side) - \(audio) - Memory usage - 100 MB"
+            return forDescription ? audio : "\(pageTitle(index))\(side) - \(audio) - Memory usage - 100 MB"
         }
 
         func windows() throws -> [AXUIElement] {
@@ -142,25 +183,36 @@ final class HuluPlayerPrepressTests: XCTestCase {
             if CFEqual(root, window(for: 0)) {
                 if rejectWindowTraversal { throw AccessibilityFailure("unexpected traversal after final marker") }
                 let indices = split ? Array(0..<pageCount) : (pageCount > 0 ? [0] : [])
-                return indices.map { node(webs[$0], role: "AXWebArea", title: "Hulu | Watch", url: pageURL($0), depth: 2) } +
+                return indices.map { node(webs[$0], role: "AXWebArea", title: pageTitle($0), url: pageURL($0), depth: 2) } +
                     indices.map { node(tabs[$0], role: kAXRadioButtonRole, title: tabTitle($0, forDescription: false), description: tabTitle($0, forDescription: true), depth: 1) }
             }
             if CFEqual(root, window2), pageCount == 2, !split {
                 if rejectWindowTraversal { throw AccessibilityFailure("unexpected traversal after final marker") }
                 return [
-                    node(web2, role: "AXWebArea", title: "Hulu | Watch", url: pageURL(1), depth: 2),
+                    node(web2, role: "AXWebArea", title: pageTitle(1), url: pageURL(1), depth: 2),
                     node(tab2, role: kAXRadioButtonRole, title: tabTitle(1, forDescription: false), description: tabTitle(1, forDescription: true), depth: 1),
                 ]
             }
             if let index = index(root, in: webs) {
-                return [node(roots[index], role: kAXGroupRole, domIdentifier: "__player__")]
+                if let areaNodesOverride { return areaNodesOverride }
+                return [node(roots[index], role: kAXGroupRole, domIdentifier: providers[index].rootIdentifier, hidden: rootHidden)]
             }
             if let index = index(root, in: roots) {
                 playerScanCount += 1
-                let result = [
-                    node(roots[index], role: kAXGroupRole, domIdentifier: "__player__"),
-                    node(markers[index], role: kAXStaticTextRole, value: markerPresent[index] ? "Ad" : ""),
-                ]
+                if incompletePlayerScan { throw AccessibilityFailure("AX traversal limit reached; results are incomplete.") }
+                if let contentNodesOverride { return contentNodesOverride }
+                var result = [node(roots[index], role: kAXGroupRole, domIdentifier: providers[index].rootIdentifier, hidden: rootHidden)]
+                if providers[index] == .peacock {
+                    result.append(node(videoAncestor1, role: kAXGroupRole, depth: 1, hidden: videoAncestorHidden[0]))
+                    result.append(node(videoAncestor2, role: kAXGroupRole, depth: 2, hidden: videoAncestorHidden.contains(true)))
+                    if videoCount > 0 { result.append(node(index == 0 ? video1 : video2, role: kAXGroupRole, domIdentifier: videoIdentifier, depth: 3, hidden: videoHidden || videoAncestorHidden.contains(true))) }
+                    if videoCount > 1 { result.append(node(AXUIElementCreateApplication(413), role: kAXGroupRole, domIdentifier: "core-video-shaka", depth: 1)) }
+                    result.append(node(ancestor1, role: kAXGroupRole, depth: 1, hidden: ancestorHidden))
+                    result.append(node(markers[index], role: kAXGroupRole, depth: 2, hidden: markerHidden || ancestorHidden, classes: try domClassList(markers[index])))
+                    result.append(node(AXUIElementCreateApplication(414), role: kAXStaticTextRole, value: "26", depth: 1))
+                } else {
+                    result.append(node(markers[index], role: kAXStaticTextRole, value: markerPresent[index] ? "Ad" : "", depth: 1))
+                }
                 if rejectTraversalAfterPlayerScan == playerScanCount { rejectWindowTraversal = true }
                 return result
             }
@@ -190,26 +242,28 @@ final class HuluPlayerPrepressTests: XCTestCase {
             value: String = "",
             url: String? = nil,
             domIdentifier: String = "",
-            depth: Int = 0
+            depth: Int = 0,
+            hidden: Bool = false,
+            classes: [String] = []
         ) -> AccessibilityNode {
             AccessibilityNode(
                 element: element, role: role, title: title, nodeDescription: description,
                 value: value, valueDescription: "", url: url, domIdentifier: domIdentifier,
-                hidden: false, depth: depth
+                hidden: hidden, depth: depth, domClassList: classes
             )
         }
 
         func area(_ index: Int, visibleCount: Int) -> ChromeWatchArea {
             ChromeWatchArea(
                 window: window(for: index), windowIndex: index, webArea: webs[index],
-                url: pageURL(index), title: "Hulu | Watch", visibleAreaCountInWindow: visibleCount
+                url: pageURL(index), title: pageTitle(index), visibleAreaCountInWindow: visibleCount
             )
         }
     }
 
     func testNativeTabMuteIgnoresStaleChildLabelAndHuluControls() throws {
         let chrome = FakeChrome()
-        let client = HuluPlayerClient(chrome: chrome)
+        let client = ChromePlayerClient(chrome: chrome)
         let player = try XCTUnwrap(client.discoverPlayers().first)
         let outcome = try client.muteIfCurrentlyMarkedAd(player.identity, expectedPlayers: [player.identity], isCancelled: { false })
         XCTAssertEqual(outcome, .mutedAndVerified)
@@ -219,7 +273,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
 
     func testStateChangingDuringActionValidationCannotToggleBack() throws {
         let chrome = FakeChrome()
-        let client = HuluPlayerClient(chrome: chrome)
+        let client = ChromePlayerClient(chrome: chrome)
         let player = try XCTUnwrap(client.discoverPlayers().first)
         chrome.onAdvertisedActions = { chrome.audioState[0] = .muted }
         XCTAssertEqual(try client.muteIfCurrentlyMarkedAd(player.identity, expectedPlayers: [player.identity], isCancelled: { false }), .alreadyMuted)
@@ -228,7 +282,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
 
     func testMarkerDisappearingDuringActionValidationDoesNotPress() throws {
         let chrome = FakeChrome()
-        let client = HuluPlayerClient(chrome: chrome)
+        let client = ChromePlayerClient(chrome: chrome)
         let player = try XCTUnwrap(client.discoverPlayers().first)
         chrome.onAdvertisedActions = { chrome.markerPresent[0] = false }
         XCTAssertEqual(try client.muteIfCurrentlyMarkedAd(player.identity, expectedPlayers: [player.identity], isCancelled: { false }), .markerDisappeared)
@@ -240,7 +294,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
         chrome.pageCount = 2
         chrome.split = true
         chrome.duplicateURLs = true
-        let client = HuluPlayerClient(chrome: chrome)
+        let client = ChromePlayerClient(chrome: chrome)
         let players = try client.discoverPlayers()
         chrome.onMarkerValueRead = { chrome.selected[1] = false }
         XCTAssertThrowsError(try client.muteIfCurrentlyMarkedAd(players[0].identity, expectedPlayers: players.map(\.identity), isCancelled: { false }))
@@ -249,7 +303,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
 
     func testNoTreeTraversalOccursAfterFinalMarkerRead() throws {
         let chrome = FakeChrome()
-        let client = HuluPlayerClient(chrome: chrome)
+        let client = ChromePlayerClient(chrome: chrome)
         let player = try XCTUnwrap(client.discoverPlayers().first)
         chrome.onMarkerValueRead = { chrome.rejectWindowTraversal = true }
         XCTAssertEqual(try client.muteIfCurrentlyMarkedAd(player.identity, expectedPlayers: [player.identity], isCancelled: { false }), .mutedAndVerified)
@@ -278,19 +332,19 @@ final class HuluPlayerPrepressTests: XCTestCase {
 
         let disabled = FakeChrome()
         disabled.buttonEnabled = false
-        let client = HuluPlayerClient(chrome: disabled)
+        let client = ChromePlayerClient(chrome: disabled)
         let player = try XCTUnwrap(client.discoverPlayers().first)
         XCTAssertThrowsError(try client.muteIfCurrentlyMarkedAd(player.identity, expectedPlayers: [player.identity], isCancelled: { false }))
         XCTAssertEqual(disabled.presses, 0)
 
         let unknown = FakeChrome()
         unknown.persistentUnknownAudio = true
-        XCTAssertThrowsError(try HuluPlayerClient(chrome: unknown).discoverPlayers())
+        XCTAssertThrowsError(try ChromePlayerClient(chrome: unknown).discoverPlayers())
         XCTAssertEqual(unknown.presses, 0)
 
         let noAction = FakeChrome()
         noAction.actionAdvertised = false
-        let noActionClient = HuluPlayerClient(chrome: noAction)
+        let noActionClient = ChromePlayerClient(chrome: noAction)
         let noActionPlayer = try XCTUnwrap(noActionClient.discoverPlayers().first)
         XCTAssertThrowsError(try noActionClient.muteIfCurrentlyMarkedAd(noActionPlayer.identity, expectedPlayers: [noActionPlayer.identity], isCancelled: { false }))
         XCTAssertEqual(noAction.presses, 0)
@@ -298,7 +352,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
 
     func testPostpressConflictingStatusConvergesWithoutRetry() throws {
         let chrome = FakeChrome()
-        let client = HuluPlayerClient(chrome: chrome)
+        let client = ChromePlayerClient(chrome: chrome)
         let player = try XCTUnwrap(client.discoverPlayers().first)
         chrome.postpressTransientConflictReads = 3
         XCTAssertEqual(try client.muteIfCurrentlyMarkedAd(player.identity, expectedPlayers: [player.identity], isCancelled: { false }), .mutedAndVerified)
@@ -308,14 +362,14 @@ final class HuluPlayerPrepressTests: XCTestCase {
     func testPersistentPostpressUnknownAndUnchangedStateNeverRetry() throws {
         let unknown = FakeChrome()
         unknown.postpressUnknownAudio = true
-        let unknownClient = HuluPlayerClient(chrome: unknown, readbackTimeout: 0.02)
+        let unknownClient = ChromePlayerClient(chrome: unknown, readbackTimeout: 0.02)
         let unknownPlayer = try XCTUnwrap(unknownClient.discoverPlayers().first)
         XCTAssertThrowsError(try unknownClient.muteIfCurrentlyMarkedAd(unknownPlayer.identity, expectedPlayers: [unknownPlayer.identity], isCancelled: { false }))
         XCTAssertEqual(unknown.presses, 1)
 
         let unchanged = FakeChrome()
         unchanged.mutationChangesState = false
-        let unchangedClient = HuluPlayerClient(chrome: unchanged, readbackTimeout: 0.02)
+        let unchangedClient = ChromePlayerClient(chrome: unchanged, readbackTimeout: 0.02)
         let unchangedPlayer = try XCTUnwrap(unchangedClient.discoverPlayers().first)
         XCTAssertThrowsError(try unchangedClient.muteIfCurrentlyMarkedAd(unchangedPlayer.identity, expectedPlayers: [unchangedPlayer.identity], isCancelled: { false }))
         XCTAssertEqual(unchanged.presses, 1)
@@ -323,7 +377,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
 
     func testDiscoveryReusesOnlyExactStablePlayerIdentities() throws {
         let chrome = FakeChrome()
-        let client = HuluPlayerClient(chrome: chrome)
+        let client = ChromePlayerClient(chrome: chrome)
         let first = try XCTUnwrap(client.discoverPlayers().first)
         let second = try XCTUnwrap(client.discoverPlayers().first)
         XCTAssertEqual(first.identity, second.identity)
@@ -343,7 +397,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
         chrome.pageCount = 2
         chrome.split = true
         chrome.duplicateURLs = true
-        let client = HuluPlayerClient(chrome: chrome)
+        let client = ChromePlayerClient(chrome: chrome)
         let first = try client.discoverPlayers()
         let second = try client.discoverPlayers()
         XCTAssertEqual(first.map(\.identity), second.map(\.identity))
@@ -352,31 +406,31 @@ final class HuluPlayerPrepressTests: XCTestCase {
 
     func testExactNativeReferenceReplacementAndDisappearanceInvalidateIdentity() throws {
         let windowChrome = FakeChrome()
-        let windowClient = HuluPlayerClient(chrome: windowChrome)
+        let windowClient = ChromePlayerClient(chrome: windowChrome)
         let originalWindow = try XCTUnwrap(windowClient.discoverPlayers().first)
         windowChrome.replaceWindow1 = true
         XCTAssertNotEqual(try XCTUnwrap(windowClient.discoverPlayers().first).identity.token, originalWindow.identity.token)
 
         let webChrome = FakeChrome()
-        let webClient = HuluPlayerClient(chrome: webChrome)
+        let webClient = ChromePlayerClient(chrome: webChrome)
         let originalWeb = try XCTUnwrap(webClient.discoverPlayers().first)
         webChrome.replaceWeb1 = true
         XCTAssertNotEqual(try XCTUnwrap(webClient.discoverPlayers().first).identity.token, originalWeb.identity.token)
 
         let tabChrome = FakeChrome()
-        let tabClient = HuluPlayerClient(chrome: tabChrome)
+        let tabClient = ChromePlayerClient(chrome: tabChrome)
         let originalTab = try XCTUnwrap(tabClient.discoverPlayers().first)
         tabChrome.replaceTab1 = true
         XCTAssertNotEqual(try XCTUnwrap(tabClient.discoverPlayers().first).identity.token, originalTab.identity.token)
 
         let buttonChrome = FakeChrome()
-        let buttonClient = HuluPlayerClient(chrome: buttonChrome)
+        let buttonClient = ChromePlayerClient(chrome: buttonChrome)
         let originalButton = try XCTUnwrap(buttonClient.discoverPlayers().first)
         buttonChrome.replaceButton1 = true
         XCTAssertNotEqual(try XCTUnwrap(buttonClient.discoverPlayers().first).identity.token, originalButton.identity.token)
 
         let goneChrome = FakeChrome()
-        let goneClient = HuluPlayerClient(chrome: goneChrome)
+        let goneClient = ChromePlayerClient(chrome: goneChrome)
         let disappeared = try XCTUnwrap(goneClient.discoverPlayers().first)
         goneChrome.pageCount = 0
         XCTAssertTrue(try goneClient.discoverPlayers().isEmpty)
@@ -392,7 +446,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
         chrome.markerPresent[0] = false
         chrome.audioState[0] = .muted
         chrome.rejectTraversalAfterPlayerScan = 3
-        let client = HuluPlayerClient(chrome: chrome)
+        let client = ChromePlayerClient(chrome: chrome)
         let player = try XCTUnwrap(client.discoverPlayers().first)
         XCTAssertEqual(try client.unmuteIfAdMarkerAbsent(
             player.identity,
@@ -407,7 +461,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
         let chrome = FakeChrome()
         chrome.markerPresent[0] = false
         chrome.audioState[0] = .muted
-        let client = HuluPlayerClient(chrome: chrome)
+        let client = ChromePlayerClient(chrome: chrome)
         let player = try XCTUnwrap(client.discoverPlayers().first)
         chrome.onAdvertisedActions = { chrome.markerPresent[0] = true }
         XCTAssertEqual(try client.unmuteIfAdMarkerAbsent(
@@ -422,7 +476,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
         let playing = FakeChrome()
         playing.markerPresent[0] = false
         playing.buttonEnabled = false
-        let playingClient = HuluPlayerClient(chrome: playing)
+        let playingClient = ChromePlayerClient(chrome: playing)
         let playingPlayer = try XCTUnwrap(playingClient.discoverPlayers().first)
         XCTAssertEqual(try playingClient.unmuteIfAdMarkerAbsent(
             playingPlayer.identity,
@@ -434,7 +488,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
         let disabled = FakeChrome()
         disabled.markerPresent[0] = false
         disabled.audioState[0] = .muted
-        let disabledClient = HuluPlayerClient(chrome: disabled)
+        let disabledClient = ChromePlayerClient(chrome: disabled)
         let disabledPlayer = try XCTUnwrap(disabledClient.discoverPlayers().first)
         disabled.buttonEnabled = false
         XCTAssertThrowsError(try disabledClient.unmuteIfAdMarkerAbsent(
@@ -447,7 +501,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
         let unknown = FakeChrome()
         unknown.markerPresent[0] = false
         unknown.audioState[0] = .muted
-        let unknownClient = HuluPlayerClient(chrome: unknown)
+        let unknownClient = ChromePlayerClient(chrome: unknown)
         let unknownPlayer = try XCTUnwrap(unknownClient.discoverPlayers().first)
         unknown.onAdvertisedActions = { unknown.persistentUnknownAudio = true }
         XCTAssertThrowsError(try unknownClient.unmuteIfAdMarkerAbsent(
@@ -461,7 +515,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
         unchanged.markerPresent[0] = false
         unchanged.audioState[0] = .muted
         unchanged.mutationChangesState = false
-        let unchangedClient = HuluPlayerClient(chrome: unchanged, readbackTimeout: 0.02)
+        let unchangedClient = ChromePlayerClient(chrome: unchanged, readbackTimeout: 0.02)
         let unchangedPlayer = try XCTUnwrap(unchangedClient.discoverPlayers().first)
         XCTAssertThrowsError(try unchangedClient.unmuteIfAdMarkerAbsent(
             unchangedPlayer.identity,
@@ -475,7 +529,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
         let chrome = FakeChrome()
         chrome.markerPresent[0] = false
         chrome.audioState[0] = .muted
-        let client = HuluPlayerClient(chrome: chrome)
+        let client = ChromePlayerClient(chrome: chrome)
         let player = try XCTUnwrap(client.discoverPlayers().first)
         var checks = 0
         XCTAssertThrowsError(try client.unmuteIfAdMarkerAbsent(
@@ -488,4 +542,195 @@ final class HuluPlayerPrepressTests: XCTestCase {
         )) { XCTAssertTrue($0 is MonitoringCancelled) }
         XCTAssertEqual(chrome.presses, 0)
     }
+    func testPeacockClassIsRereadAndDisappearingDuringPreparationPreventsMute() throws {
+        let chrome = FakeChrome()
+        chrome.providers[0] = .peacock
+        let client = ChromePlayerClient(chrome: chrome)
+        let player = try XCTUnwrap(client.discoverPlayers().first)
+        chrome.onAdvertisedActions = { chrome.classes = ["pffOverlay-next", "adBreakInactive-next"] }
+        let before = chrome.classReads
+        XCTAssertEqual(try client.muteIfCurrentlyMarkedAd(player.identity, expectedPlayers: [player.identity], isCancelled: { false }), .markerDisappeared)
+        XCTAssertGreaterThan(chrome.classReads, before)
+        XCTAssertEqual(chrome.presses, 0)
+    }
+
+    func testPeacockMuteAndRestoreEachUseOnePressAndNoTraversalAfterProof() throws {
+        let chrome = FakeChrome()
+        chrome.providers[0] = .peacock
+        let client = ChromePlayerClient(chrome: chrome)
+        let player = try XCTUnwrap(client.discoverPlayers().first)
+        chrome.onAdvertisedActions = { chrome.onClassRead = { chrome.rejectWindowTraversal = true } }
+        XCTAssertEqual(try client.muteIfCurrentlyMarkedAd(player.identity, expectedPlayers: [player.identity], isCancelled: { false }), .mutedAndVerified)
+        XCTAssertEqual(chrome.presses, 1)
+        XCTAssertEqual(chrome.audioState[0], .muted)
+        chrome.markerPresent[0] = false
+        chrome.rejectTraversalAfterPlayerScan = chrome.playerScanCount + 2
+        XCTAssertEqual(try client.unmuteIfAdMarkerAbsent(player.identity, expectedPlayers: [player.identity], isCancelled: { false }), .unmutedAndVerified)
+        XCTAssertEqual(chrome.presses, 2)
+        XCTAssertEqual(chrome.audioState[0], .playing)
+    }
+
+    func testPeacockReturningMarkerOrIncompleteEvidenceDuringRestoreNeverPresses() throws {
+        for mutation in [0, 1, 2, 3, 4] {
+            let chrome = FakeChrome()
+            chrome.providers[0] = .peacock
+            chrome.markerPresent[0] = false
+            chrome.audioState[0] = .muted
+            let client = ChromePlayerClient(chrome: chrome)
+            let player = try XCTUnwrap(client.discoverPlayers().first)
+            chrome.onAdvertisedActions = {
+                switch mutation {
+                case 0: chrome.markerPresent[0] = true
+                case 1: chrome.incompletePlayerScan = true
+                case 2: chrome.videoCount = 0
+                case 3: chrome.rootHidden = true
+                default: chrome.classReadFailure = true
+                }
+            }
+            if mutation == 0 {
+                XCTAssertEqual(try client.unmuteIfAdMarkerAbsent(player.identity, expectedPlayers: [player.identity], isCancelled: { false }), .markerReappeared)
+            } else {
+                XCTAssertThrowsError(try client.unmuteIfAdMarkerAbsent(player.identity, expectedPlayers: [player.identity], isCancelled: { false }))
+            }
+            XCTAssertEqual(chrome.presses, 0)
+        }
+    }
+
+    func testPeacockDirectClassReadFailureAndHiddenAncestorPreventMute() throws {
+        for failure in [false, true] {
+            let chrome = FakeChrome()
+            chrome.providers[0] = .peacock
+            let client = ChromePlayerClient(chrome: chrome)
+            let player = try XCTUnwrap(client.discoverPlayers().first)
+            chrome.onAdvertisedActions = {
+                if failure { chrome.classReadFailure = true } else { chrome.ancestorHidden = true }
+            }
+            if failure {
+                XCTAssertThrowsError(try client.muteIfCurrentlyMarkedAd(player.identity, expectedPlayers: [player.identity], isCancelled: { false }))
+            } else {
+                XCTAssertEqual(try client.muteIfCurrentlyMarkedAd(player.identity, expectedPlayers: [player.identity], isCancelled: { false }), .markerDisappeared)
+            }
+            XCTAssertEqual(chrome.presses, 0)
+        }
+    }
+
+    func testMixedProviderSplitBindingPreservesBothIdentitiesAndSinglePress() throws {
+        let chrome = FakeChrome()
+        chrome.providers = [.hulu, .peacock]
+        chrome.pageCount = 2
+        chrome.split = true
+        let client = ChromePlayerClient(chrome: chrome)
+        let players = try client.discoverPlayers()
+        XCTAssertEqual(players.count, 2)
+        XCTAssertEqual(try client.discoverPlayers().map(\.identity), players.map(\.identity))
+        XCTAssertEqual(try client.muteIfCurrentlyMarkedAd(players[1].identity, expectedPlayers: players.map(\.identity), isCancelled: { false }), .mutedAndVerified)
+        XCTAssertEqual(chrome.audioState, [.playing, .muted])
+        XCTAssertEqual(chrome.presses, 1)
+        chrome.replaceWeb1 = true
+        XCTAssertThrowsError(try client.unmuteIfAdMarkerAbsent(players[1].identity, expectedPlayers: players.map(\.identity), isCancelled: { false }))
+        XCTAssertEqual(chrome.presses, 1)
+    }
+
+    func testProductionMonitorRestoresOwnedPeacockMuteAndPreservesManualHuluMute() {
+        let chrome = FakeChrome()
+        chrome.providers = [.hulu, .peacock]
+        chrome.pageCount = 2
+        chrome.markerPresent[0] = false
+        chrome.audioState[0] = .muted
+        let queue = DispatchQueue(label: "PeacockProductionMonitorTest")
+        let monitor = AdMonitor(operationQueue: queue, interval: 0.005) { ChromePlayerClient(chrome: chrome) }
+        let restored = expectation(description: "Peacock content audio restored after two complete absence scans")
+        var completed = false
+        monitor.onStatusChange = { status in
+            if case let .monitoring(_, muted, unmuted) = status {
+                if muted == 1 { queue.async { chrome.markerPresent[1] = false } }
+                if unmuted == 1, !completed { completed = true; restored.fulfill() }
+            }
+            if case let .failed(message) = status { XCTFail(message) }
+        }
+        monitor.start()
+        wait(for: [restored], timeout: 2)
+        let drained = expectation(description: "monitor drained")
+        monitor.stopAndDrain { drained.fulfill() }
+        wait(for: [drained], timeout: 2)
+        XCTAssertEqual(chrome.presses, 2)
+        XCTAssertEqual(chrome.audioState, [.muted, .playing])
+    }
+
+    func testPeacockIdentityReplacementAndCancellationNeverPress() throws {
+        for replacement in 0..<6 {
+            let chrome = FakeChrome()
+            chrome.providers[0] = .peacock
+            let client = ChromePlayerClient(chrome: chrome)
+            let player = try XCTUnwrap(client.discoverPlayers().first)
+            switch replacement {
+            case 0: chrome.replaceWindow1 = true
+            case 1: chrome.replaceWeb1 = true
+            case 2: chrome.replaceTab1 = true
+            case 3: chrome.replaceButton1 = true
+            case 4: chrome.providers[0] = .hulu
+            default: break
+            }
+            var cancellationChecks = 0
+            XCTAssertThrowsError(try client.muteIfCurrentlyMarkedAd(
+                player.identity, expectedPlayers: [player.identity], isCancelled: {
+                    cancellationChecks += 1
+                    return replacement == 5 && cancellationChecks >= 2
+                }
+            ))
+            XCTAssertEqual(chrome.presses, 0)
+        }
+    }
+
+    func testPeacockChangingObservedAnchorIdentifierDuringPreparationPreventsPress() throws {
+        for initial in ["core-video-shaka", "core-video-tape"] {
+            for replacement in ["core-video-shaka", "core-video-tape", "core-video-other", ""] where replacement != initial {
+                let chrome = FakeChrome()
+                chrome.providers[0] = .peacock
+                chrome.videoIdentifier = initial
+                let client = ChromePlayerClient(chrome: chrome)
+                let player = try XCTUnwrap(client.discoverPlayers().first)
+                chrome.onAdvertisedActions = { chrome.videoIdentifier = replacement }
+                XCTAssertEqual(try client.muteIfCurrentlyMarkedAd(player.identity, expectedPlayers: [player.identity], isCancelled: { false }), .markerDisappeared)
+                XCTAssertEqual(chrome.presses, 0)
+            }
+        }
+    }
+
+    func testPeacockTapeNormalContentCompletesGuardedRestore() throws {
+        let chrome = FakeChrome()
+        chrome.providers[0] = .peacock
+        chrome.videoIdentifier = "core-video-tape"
+        chrome.markerPresent[0] = false
+        chrome.audioState[0] = .muted
+        let client = ChromePlayerClient(chrome: chrome)
+        let player = try XCTUnwrap(client.discoverPlayers().first)
+        XCTAssertFalse(player.hasAdMarker)
+        XCTAssertEqual(try client.unmuteIfAdMarkerAbsent(player.identity, expectedPlayers: [player.identity], isCancelled: { false }), .unmutedAndVerified)
+        XCTAssertEqual(chrome.presses, 1)
+        XCTAssertEqual(chrome.audioState[0], .playing)
+    }
+
+    func testPeacockVideoAncestorHidingDuringPreparationPreventsPressWhileVisibleVideoMutes() throws {
+        for identifier in ["core-video-shaka", "core-video-tape"] {
+            for hiddenAncestor in [nil, 0, 1] as [Int?] {
+                let chrome = FakeChrome()
+                chrome.providers[0] = .peacock
+                chrome.videoIdentifier = identifier
+                let client = ChromePlayerClient(chrome: chrome)
+                let player = try XCTUnwrap(client.discoverPlayers().first)
+                chrome.onAdvertisedActions = {
+                    if let hiddenAncestor { chrome.videoAncestorHidden[hiddenAncestor] = true }
+                    chrome.onClassRead = { chrome.rejectWindowTraversal = true }
+                }
+                let outcome = try client.muteIfCurrentlyMarkedAd(player.identity, expectedPlayers: [player.identity], isCancelled: { false })
+                XCTAssertEqual(outcome, hiddenAncestor == nil ? .mutedAndVerified : .markerDisappeared)
+                XCTAssertEqual(chrome.presses, hiddenAncestor == nil ? 1 : 0)
+                XCTAssertFalse(chrome.videoHidden)
+                XCTAssertFalse(chrome.ancestorHidden)
+                XCTAssertTrue(chrome.markerPresent[0])
+            }
+        }
+    }
+
 }

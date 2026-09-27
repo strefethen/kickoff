@@ -6,6 +6,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let websiteField = NSTextField(string: "")
     private let errorLabel = NSTextField(labelWithString: "")
     private var draft: WebsiteSettingsDraft?
+    var onSave: (() -> Void)?
 
     init(preferences: WebsitePreferences) {
         self.preferences = preferences
@@ -34,7 +35,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         websiteField.setAccessibilityLabel("Website URL")
         websiteField.placeholderString = WebsiteURL.approvedDefault.absoluteString
 
-        let helper = NSTextField(labelWithString: "Open this website in both Chrome panes.")
+        let helper = NSTextField(labelWithString: "Open this website in all Chrome panes.")
         helper.textColor = .secondaryLabelColor
 
         errorLabel.textColor = .systemRed
@@ -114,6 +115,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         do {
             draft.update(websiteField.stringValue)
             _ = try draft.save()
+            onSave?()
             window?.performClose(nil)
         } catch let error as WebsiteValidationError {
             showError(error.description)

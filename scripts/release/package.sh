@@ -25,7 +25,7 @@ if [[ ! -f "$ASC_KEY_PATH" ]]; then
     exit 66
 fi
 
-archive_name="Kickoff-$RELEASE_VERSION-universal.zip"
+archive_name="Kickoff-$RELEASE_VERSION-arm64.zip"
 archive_path="$release_root/$archive_name"
 checksum_path="$archive_path.sha256"
 submission_path="$release_root/.Kickoff-$RELEASE_VERSION-submission.$$.zip"

@@ -7,17 +7,17 @@ final class AdAudioPolicy {
         var consecutiveCompleteAbsenceScans = 0
     }
 
-    private var leases: [HuluPlayerIdentity: Lease] = [:]
+    private var leases: [PlayerIdentity: Lease] = [:]
 
-    func claimAfterVerifiedMute(_ identity: HuluPlayerIdentity) {
+    func claimAfterVerifiedMute(_ identity: PlayerIdentity) {
         leases[identity] = Lease()
     }
 
-    func restoreCandidates(afterCompleteScan players: [HuluPlayerState]) -> [HuluPlayerIdentity] {
+    func restoreCandidates(afterCompleteScan players: [PlayerState]) -> [PlayerIdentity] {
         let current = Dictionary(uniqueKeysWithValues: players.map { ($0.identity, $0) })
         leases = leases.filter { current[$0.key] != nil }
 
-        var candidates: [HuluPlayerIdentity] = []
+        var candidates: [PlayerIdentity] = []
         for player in players {
             guard var lease = leases[player.identity] else { continue }
             if !player.muted {
@@ -36,7 +36,7 @@ final class AdAudioPolicy {
         return candidates
     }
 
-    func recordRestore(_ outcome: UnmuteAfterAdOutcome, for identity: HuluPlayerIdentity) {
+    func recordRestore(_ outcome: UnmuteAfterAdOutcome, for identity: PlayerIdentity) {
         switch outcome {
         case .unmutedAndVerified, .alreadyUnmuted:
             leases.removeValue(forKey: identity)
@@ -47,5 +47,5 @@ final class AdAudioPolicy {
         }
     }
 
-    func owns(_ identity: HuluPlayerIdentity) -> Bool { leases[identity] != nil }
+    func owns(_ identity: PlayerIdentity) -> Bool { leases[identity] != nil }
 }

@@ -3,8 +3,8 @@ import XCTest
 @testable import Kickoff
 
 final class AdAudioPolicyTests: XCTestCase {
-    private func state(_ identity: HuluPlayerIdentity, marked: Bool, muted: Bool) -> HuluPlayerState {
-        HuluPlayerState(
+    private func state(_ identity: PlayerIdentity, marked: Bool, muted: Bool) -> PlayerState {
+        PlayerState(
             identity: identity,
             windowIndex: 0,
             muted: muted,
@@ -14,7 +14,7 @@ final class AdAudioPolicyTests: XCTestCase {
     }
 
     func testAbsenceMustBeConsecutiveAndMarkerResetsCounter() {
-        let identity = HuluPlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/a")
+        let identity = PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/a")
         let policy = AdAudioPolicy()
         policy.claimAfterVerifiedMute(identity)
         XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [state(identity, marked: false, muted: true)]).isEmpty)
@@ -24,7 +24,7 @@ final class AdAudioPolicyTests: XCTestCase {
     }
 
     func testObservedExternalUnmuteDropsLeaseEvenWhenAdIsPresent() {
-        let identity = HuluPlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/a")
+        let identity = PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/a")
         let policy = AdAudioPolicy()
         policy.claimAfterVerifiedMute(identity)
         XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [state(identity, marked: true, muted: false)]).isEmpty)
@@ -34,7 +34,7 @@ final class AdAudioPolicyTests: XCTestCase {
     }
 
     func testDisappearedIdentityPrunesLease() {
-        let identity = HuluPlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/a")
+        let identity = PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/a")
         let policy = AdAudioPolicy()
         policy.claimAfterVerifiedMute(identity)
         XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: []).isEmpty)

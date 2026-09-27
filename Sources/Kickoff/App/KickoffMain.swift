@@ -56,10 +56,10 @@ struct KickoffMain {
                 "chromePID": chrome.pid,
                 "accessibilityTrusted": true,
                 "frontmostBundleID": NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "",
-                "players": try HuluPlayerClient(chrome: chrome).discoveryReport(),
+                "players": try ChromePlayerClient(chrome: chrome).discoveryReport(),
             ]
         case "--listen" where arguments.count == 2:
-            output = try HuluPlayerClient().listen(to: arguments[1])
+            output = try ChromePlayerClient().listen(to: arguments[1])
         case "--monitors" where arguments.count == 1:
             _ = NSApplication.shared
             output = monitorReport(MonitorSelection().snapshot())

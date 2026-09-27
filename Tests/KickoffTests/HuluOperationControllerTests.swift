@@ -7,40 +7,40 @@ final class HuluOperationControllerTests: XCTestCase {
         case expected
     }
 
-    private final class EmptyClient: HuluPlayerControlling {
-        func discoverPlayers() throws -> [HuluPlayerState] { [] }
+    private final class EmptyClient: PlayerControlling {
+        func discoverPlayers() throws -> [PlayerState] { [] }
         func muteIfCurrentlyMarkedAd(
-            _ player: HuluPlayerIdentity,
-            expectedPlayers: [HuluPlayerIdentity],
+            _ player: PlayerIdentity,
+            expectedPlayers: [PlayerIdentity],
             isCancelled: () -> Bool
         ) throws -> MuteMarkedAdOutcome { .markerDisappeared }
         func unmuteIfAdMarkerAbsent(
-            _ player: HuluPlayerIdentity,
-            expectedPlayers: [HuluPlayerIdentity],
+            _ player: PlayerIdentity,
+            expectedPlayers: [PlayerIdentity],
             isCancelled: () -> Bool
         ) throws -> UnmuteAfterAdOutcome { .markerReappeared }
     }
 
-    private final class BlockingClient: HuluPlayerControlling {
+    private final class BlockingClient: PlayerControlling {
         let started: XCTestExpectation
         let gate: DispatchSemaphore
         init(started: XCTestExpectation, gate: DispatchSemaphore) {
             self.started = started
             self.gate = gate
         }
-        func discoverPlayers() throws -> [HuluPlayerState] {
+        func discoverPlayers() throws -> [PlayerState] {
             started.fulfill()
             gate.wait()
             return []
         }
         func muteIfCurrentlyMarkedAd(
-            _ player: HuluPlayerIdentity,
-            expectedPlayers: [HuluPlayerIdentity],
+            _ player: PlayerIdentity,
+            expectedPlayers: [PlayerIdentity],
             isCancelled: () -> Bool
         ) throws -> MuteMarkedAdOutcome { .markerDisappeared }
         func unmuteIfAdMarkerAbsent(
-            _ player: HuluPlayerIdentity,
-            expectedPlayers: [HuluPlayerIdentity],
+            _ player: PlayerIdentity,
+            expectedPlayers: [PlayerIdentity],
             isCancelled: () -> Bool
         ) throws -> UnmuteAfterAdOutcome { .markerReappeared }
     }

@@ -101,7 +101,7 @@ final class ChromeTabAudioClient {
               try currentURL(of: binding.webArea) == binding.url,
               try chrome.attribute(binding.webArea, "AXHidden") as? Bool != true,
               titleMatches(try chrome.text(binding.tab, kAXTitleAttribute), webAreaTitle: binding.webAreaTitle) else {
-            throw AccessibilityFailure("The bound Chrome window or Hulu web area changed immediately before tab audio action.")
+            throw AccessibilityFailure("The bound Chrome window or supported player web area changed immediately before tab audio action.")
         }
         let parent = try chrome.attribute(binding.button, kAXParentAttribute)
         guard let parent, CFGetTypeID(parent) == AXUIElementGetTypeID(),
@@ -156,22 +156,22 @@ final class ChromeTabAudioClient {
 
     private func bind(_ areas: [ChromeWatchArea], window: AXUIElement) throws -> [ChromeTabAudioBinding] {
         guard areas.count == 1 || areas.count == 2 else {
-            throw AccessibilityFailure("Expected one normal Hulu page or two split Hulu pages in a Chrome window; found \(areas.count).")
+            throw AccessibilityFailure("Expected one normal supported player page or two split supported player pages in a Chrome window; found \(areas.count).")
         }
         let candidates = try tabCandidates(in: window)
         if areas.count == 1 {
             guard areas[0].visibleAreaCountInWindow == 1 else {
-                throw AccessibilityFailure("A single Hulu page can be bound only when it is the window's single visible top-level web area.")
+                throw AccessibilityFailure("A single supported player page can be bound only when it is the window's single visible top-level web area.")
             }
             let selected = candidates.filter(\.selected)
             guard selected.count == 1, let tab = selected.first else {
-                throw AccessibilityFailure("One visible Hulu page requires exactly one selected native Chrome tab.")
+                throw AccessibilityFailure("One visible supported player page requires exactly one selected native Chrome tab.")
             }
             return [try binding(area: areas[0], tab: tab, side: nil, peerArea: nil, peerTab: nil)]
         }
 
         guard areas.allSatisfy({ $0.visibleAreaCountInWindow == 2 }) else {
-            throw AccessibilityFailure("Two Hulu split pages must be the window's only two visible top-level web areas.")
+            throw AccessibilityFailure("Two supported player split pages must be the window's only two visible top-level web areas.")
         }
 
         let selected = candidates.filter(\.selected)
@@ -181,7 +181,7 @@ final class ChromeTabAudioClient {
         guard selected.count == 2,
               sided[.left]?.count == 1, let leftTab = sided[.left]?.first?.1,
               sided[.right]?.count == 1, let rightTab = sided[.right]?.first?.1 else {
-            throw AccessibilityFailure("Two visible Hulu pages require exactly one Left view and one Right view native Chrome tab.")
+            throw AccessibilityFailure("Two visible supported player pages require exactly one Left view and one Right view native Chrome tab.")
         }
         let framed = try areas.map { area in (area, try frame(of: area.webArea)) }
         guard let leftArea = framed.min(by: { $0.1.midX < $1.1.midX }),
@@ -190,7 +190,7 @@ final class ChromeTabAudioClient {
               leftArea.1.maxX <= rightArea.1.minX,
               leftArea.1.maxY > rightArea.1.minY,
               rightArea.1.maxY > leftArea.1.minY else {
-            throw AccessibilityFailure("Split Hulu web areas do not expose unique non-overlapping horizontal geometry.")
+            throw AccessibilityFailure("Split supported player web areas do not expose unique non-overlapping horizontal geometry.")
         }
         return [
             try binding(area: leftArea.0, tab: leftTab, side: .left, peerArea: rightArea.0.webArea, peerTab: rightTab.element),
@@ -209,7 +209,7 @@ final class ChromeTabAudioClient {
             throw AccessibilityFailure("The selected Chrome tab does not expose a native Mute tab or Unmute tab button. Set chrome://flags/#enable-tab-audio-muting to Enabled, relaunch Chrome, and start Ad Muting again.")
         }
         guard titleMatches(tab.title, webAreaTitle: area.title) else {
-            throw AccessibilityFailure("Chrome native tab title does not match its candidate Hulu web area title.")
+            throw AccessibilityFailure("Chrome native tab title does not match its candidate supported player web area title.")
         }
         let state: ChromeTabAudioState
         do {
@@ -369,14 +369,14 @@ final class ChromeTabAudioClient {
               CFGetTypeID(positionValue) == AXValueGetTypeID(),
               let sizeValue = try chrome.attribute(element, kAXSizeAttribute),
               CFGetTypeID(sizeValue) == AXValueGetTypeID() else {
-            throw AccessibilityFailure("Split Hulu web area geometry is unavailable.")
+            throw AccessibilityFailure("Split supported player web area geometry is unavailable.")
         }
         var point = CGPoint.zero
         var size = CGSize.zero
         guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &point),
               AXValueGetValue(sizeValue as! AXValue, .cgSize, &size),
               size.width > 0, size.height > 0 else {
-            throw AccessibilityFailure("Split Hulu web area geometry is invalid.")
+            throw AccessibilityFailure("Split supported player web area geometry is invalid.")
         }
         return CGRect(origin: point, size: size)
     }
