@@ -1,7 +1,7 @@
 import Foundation
 
 /// Per-monitor-run ownership of tabs muted by this run. Claims never survive a
-/// stop, restart, cancellation, setup, quit, or error.
+/// stop, restart, cancellation, setup, quit, or terminal error.
 final class AdAudioPolicy {
     private struct Lease {
         var consecutiveCompleteAbsenceScans = 0

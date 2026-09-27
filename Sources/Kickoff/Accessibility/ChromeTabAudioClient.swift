@@ -66,12 +66,19 @@ final class ChromeTabAudioClient {
 
     func bind(_ watchAreas: [ChromeWatchArea]) throws -> [ChromeTabAudioBinding] {
         var result: [ChromeTabAudioBinding] = []
+        var unavailable: ChromeAudioControlsUnavailable?
         var remaining = watchAreas
         while let first = remaining.first {
             let inWindow = remaining.filter { CFEqual($0.window, first.window) }
             remaining.removeAll { CFEqual($0.window, first.window) }
-            result.append(contentsOf: try bind(inWindow, window: first.window))
+            do {
+                result.append(contentsOf: try bind(inWindow, window: first.window))
+            } catch let error as ChromeAudioControlsUnavailable {
+                // Validate the other windows before accepting a recoverable gap.
+                unavailable = unavailable ?? error
+            }
         }
+        if let unavailable { throw unavailable }
         return result
     }
 
@@ -197,10 +204,22 @@ final class ChromeTabAudioClient {
               rightArea.1.maxY > leftArea.1.minY else {
             throw AccessibilityFailure("Split supported player web areas do not expose unique non-overlapping horizontal geometry.")
         }
-        return [
-            try binding(area: leftArea.0, tab: leftTab, side: .left, peerArea: rightArea.0.webArea, peerTab: rightTab.element),
-            try binding(area: rightArea.0, tab: rightTab, side: .right, peerArea: leftArea.0.webArea, peerTab: leftTab.element),
+        let pairs: [(ChromeWatchArea, TabCandidate, SplitSide, AXUIElement, AXUIElement)] = [
+            (leftArea.0, leftTab, .left, rightArea.0.webArea, rightTab.element),
+            (rightArea.0, rightTab, .right, leftArea.0.webArea, leftTab.element),
         ]
+        var result: [ChromeTabAudioBinding] = []
+        var unavailable: ChromeAudioControlsUnavailable?
+        for (area, tab, side, peerArea, peerTab) in pairs {
+            do {
+                result.append(try binding(area: area, tab: tab, side: side, peerArea: peerArea, peerTab: peerTab))
+            } catch let error as ChromeAudioControlsUnavailable {
+                // A missing control must not hide a terminal failure on its peer.
+                unavailable = unavailable ?? error
+            }
+        }
+        if let unavailable { throw unavailable }
+        return result
     }
 
     private func binding(

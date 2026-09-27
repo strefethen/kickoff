@@ -58,6 +58,9 @@ final class HuluPlayerPrepressTests: XCTestCase {
         var buttonEnabled = true
         var actionAdvertised = true
         var mutationChangesState = true
+        var missingAudioButtons: Set<Int> = []
+        var wrongTabTitles: Set<Int> = []
+        var conflictingAudioTabs: Set<Int> = []
         var missingAudioButton = false
         var wrongTabTitle = false
         var persistentConflictingAudio = false
@@ -103,7 +106,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
                 }
             }
             if let index = index(element, in: tabs) {
-                if name == kAXChildrenAttribute { return (missingAudioButton ? [] : [buttons[index]]) as CFArray }
+                if name == kAXChildrenAttribute { return ((missingAudioButton || missingAudioButtons.contains(index)) ? [] : [buttons[index]]) as CFArray }
                 if name == "AXSelected" { return selected[index] as CFBoolean }
             }
             if let index = index(element, in: buttons) {
@@ -157,11 +160,11 @@ final class HuluPlayerPrepressTests: XCTestCase {
         private func pageTitle(_ index: Int) -> String { providers[index] == .hulu ? "Hulu | Watch" : "Peacock | Watch" }
 
         private func tabTitle(_ index: Int, forDescription: Bool) -> String {
-            if wrongTabTitle { return "Other page - Audio playing" }
+            if wrongTabTitle || wrongTabTitles.contains(index) { return "Other page - Audio playing" }
             if persistentUnknownAudio { return forDescription ? "" : "\(pageTitle(index)) - Memory usage - 100 MB" }
             let actual = audioState[index]
             let reported: ChromeTabAudioState
-            if forDescription, persistentConflictingAudio || transientConflictReads > 0 {
+            if forDescription, persistentConflictingAudio || conflictingAudioTabs.contains(index) || transientConflictReads > 0 {
                 if transientConflictReads > 0 { transientConflictReads -= 1 }
                 reported = actual == .muted ? .playing : .muted
             } else {
@@ -377,6 +380,46 @@ final class HuluPlayerPrepressTests: XCTestCase {
         wrong.missingAudioButton = true
         XCTAssertThrowsError(try ChromePlayerClient(chrome: wrong).discoverPlayers()) { error in
             XCTAssertFalse(error is ChromeAudioControlsUnavailable)
+        }
+    }
+
+    func testMissingControlsDoNotMaskTerminalPeerFailures() throws {
+        for split in [false, true] {
+            for wrongTitle in [false, true] {
+                for missingIndex in [0, 1] {
+                    let chrome = FakeChrome()
+                    chrome.pageCount = 2
+                    chrome.split = split
+                    chrome.missingAudioButtons = [missingIndex]
+                    let invalidIndex = 1 - missingIndex
+                    if wrongTitle {
+                        chrome.wrongTabTitles = [invalidIndex]
+                    } else {
+                        chrome.conflictingAudioTabs = [invalidIndex]
+                    }
+                    XCTAssertThrowsError(try ChromePlayerClient(chrome: chrome).discoverPlayers()) { error in
+                        XCTAssertTrue(error is AccessibilityFailure)
+                        XCTAssertFalse(error is ChromeAudioControlsUnavailable)
+                    }
+                    XCTAssertEqual(chrome.presses, 0)
+                }
+            }
+        }
+    }
+
+    func testMissingControlsNeverReturnPartialBindings() throws {
+        for split in [false, true] {
+            let chrome = FakeChrome()
+            chrome.pageCount = 2
+            chrome.split = split
+            chrome.missingAudioButtons = [0]
+            let client = ChromePlayerClient(chrome: chrome)
+            XCTAssertThrowsError(try client.discoverPlayers()) { error in
+                XCTAssertTrue(error is ChromeAudioControlsUnavailable)
+            }
+            XCTAssertEqual(chrome.presses, 0)
+            chrome.missingAudioButtons = []
+            XCTAssertEqual(try client.discoverPlayers().count, 2)
         }
     }
 
