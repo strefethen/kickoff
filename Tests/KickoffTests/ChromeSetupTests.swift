@@ -56,6 +56,62 @@ final class ChromeSetupTests: XCTestCase {
         }
     }
 
+    func testInstalledChromeIsOpenedBeforeSetupNeedsIt() throws {
+        let url = URL(fileURLWithPath: "/Applications/Google Chrome.app")
+        var runningCount = 0
+        var openedURL: URL?
+
+        try ChromeApplication.ensureRunning(
+            runningCount: { runningCount },
+            installedURL: { url },
+            open: { requestedURL, completion in
+                openedURL = requestedURL
+                runningCount = 1
+                completion(.success(()))
+            }
+        )
+
+        XCTAssertEqual(openedURL, url)
+    }
+
+    func testRunningChromeIsReusedWithoutOpeningIt() throws {
+        try ChromeApplication.ensureRunning(
+            runningCount: { 1 },
+            installedURL: { XCTFail("Chrome should not be looked up again"); return nil },
+            open: { _, _ in XCTFail("Chrome should not be opened again") }
+        )
+    }
+
+    func testSetupExplainsWhenChromeIsNotInstalled() {
+        XCTAssertThrowsError(try ChromeApplication.ensureRunning(
+            runningCount: { 0 },
+            installedURL: { nil },
+            open: { _, _ in XCTFail("No app should be opened") }
+        )) { error in
+            XCTAssertEqual(String(describing: error), "Google Chrome is not installed.")
+        }
+    }
+
+    func testSetupReportsChromeLaunchFailure() {
+        XCTAssertThrowsError(try ChromeApplication.ensureRunning(
+            runningCount: { 0 },
+            installedURL: { URL(fileURLWithPath: "/Applications/Google Chrome.app") },
+            open: { _, completion in
+                completion(.failure(NSError(domain: NSCocoaErrorDomain, code: NSFileNoSuchFileError)))
+            }
+        )) { error in
+            XCTAssertTrue(String(describing: error).hasPrefix("Could not open Google Chrome:"))
+        }
+    }
+
+    func testSetupDoesNotLaunchWhenMultipleChromeProcessesArePresent() {
+        XCTAssertThrowsError(try ChromeApplication.ensureRunning(
+            runningCount: { 2 },
+            installedURL: { XCTFail("No app should be looked up"); return nil },
+            open: { _, _ in XCTFail("No app should be opened") }
+        ))
+    }
+
     func testQuadFramesUseMeasuredUnequalBrowserInsetsAndOverlapBottomChrome() throws {
         let visible = CGRect(x: 0, y: 25, width: 2560, height: 1415)
         let topInsets = ChromeBrowserInsets(top: 121, bottom: 0)

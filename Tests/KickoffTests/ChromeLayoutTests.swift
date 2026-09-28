@@ -33,6 +33,7 @@ final class ChromeLayoutTests: XCTestCase {
         let fileMenu = AXUIElementCreateApplication(203)
         let newWindowMenuItem = AXUIElementCreateApplication(204)
         var windowReads: [[AXUIElement]] = []
+        var transientWindowFailures = 0
         var fullScreenReads: [FullScreenRead] = [.value(false)]
         var frameReads: [CGRect] = [CGRect(x: 0, y: 0, width: 1920, height: 1080)]
         var actionEnabled = true
@@ -114,6 +115,10 @@ final class ChromeLayoutTests: XCTestCase {
         }
 
         func windows() throws -> [AXUIElement] {
+            if transientWindowFailures > 0 {
+                transientWindowFailures -= 1
+                throw AccessibilityFailure("Chrome is still starting", axError: .cannotComplete)
+            }
             let windows = repeated(windowReads.isEmpty ? [[window]] : windowReads, at: windowReadCount)
             windowReadCount += 1
             return windows
@@ -166,6 +171,36 @@ final class ChromeLayoutTests: XCTestCase {
         try layout.prepare(frame: expected)
 
         XCTAssertEqual(chrome.setAttributes, [kAXPositionAttribute, kAXSizeAttribute])
+        XCTAssertEqual(clock.sleeps, [])
+    }
+
+    func testNewWindowRetriesBrieflyWhenChromeIsStillBusy() throws {
+        let chrome = FakeChrome()
+        let expected = CGRect(x: 0, y: 25, width: 1920, height: 527)
+        chrome.transientWindowFailures = 2
+        chrome.windowReads = [[], [chrome.window]]
+        chrome.frameReads = [expected]
+        chrome.inspectedNodes = [pageNode(chrome.window)]
+        let (layout, clock) = try makeLayout(chrome: chrome)
+
+        try layout.prepare(frame: expected)
+
+        XCTAssertEqual(clock.sleeps, [0.1, 0.1])
+        XCTAssertEqual(chrome.presses, 1)
+    }
+
+    func testBlankNewTabDoesNotNeedPageURLBeforeNavigation() throws {
+        let chrome = FakeChrome()
+        let expected = CGRect(x: 0, y: 25, width: 1920, height: 527)
+        chrome.windowReads = [[], [chrome.window]]
+        chrome.frameReads = [expected]
+        chrome.inspectedNodes = []
+        let (layout, clock) = try makeLayout(chrome: chrome)
+
+        let window = try layout.prepare(frame: expected)
+
+        XCTAssertTrue(window.nodes.isEmpty)
+        XCTAssertEqual(chrome.presses, 1)
         XCTAssertEqual(clock.sleeps, [])
     }
 
