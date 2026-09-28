@@ -33,13 +33,47 @@ final class AdAudioPolicyTests: XCTestCase {
         XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [state(identity, marked: false, muted: true)]).isEmpty)
     }
 
-    func testDisappearedIdentityPrunesLease() {
+    func testOwnedMuteSurvivesWatchURLChangeOnSameTabToken() {
+        let token = UUID()
+        let ad = PlayerIdentity(token: token, url: "https://www.peacocktv.com/watch/playback/first")
+        let episode = PlayerIdentity(token: token, url: "https://www.peacocktv.com/watch/playback/next")
+        let policy = AdAudioPolicy()
+        policy.claimAfterVerifiedMute(ad)
+
+        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [state(episode, marked: false, muted: true)]).isEmpty)
+        XCTAssertEqual(policy.restoreCandidates(afterCompleteScan: [state(episode, marked: false, muted: true)]), [episode])
+        policy.recordRestore(.unmutedAndVerified, for: episode)
+        XCTAssertFalse(policy.owns(ad))
+    }
+
+    func testMutedTabWithoutOwnedMuteIsNeverRestored() {
+        let identity = PlayerIdentity(token: UUID(), url: "https://www.peacocktv.com/watch/playback/next")
+        let policy = AdAudioPolicy()
+        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [state(identity, marked: false, muted: true)]).isEmpty)
+        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [state(identity, marked: false, muted: true)]).isEmpty)
+        XCTAssertFalse(policy.owns(identity))
+    }
+
+    func testTemporaryPlayerGapPreservesOwnedMute() {
         let identity = PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/a")
         let policy = AdAudioPolicy()
         policy.claimAfterVerifiedMute(identity)
         XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: []).isEmpty)
-        XCTAssertFalse(policy.owns(identity))
+        XCTAssertTrue(policy.owns(identity))
+        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [state(identity, marked: false, muted: true)]).isEmpty)
+        XCTAssertEqual(policy.restoreCandidates(afterCompleteScan: [state(identity, marked: false, muted: true)]), [identity])
     }
+
+    func testDifferentTabTokenCannotInheritAnOwnedMute() {
+        let owned = PlayerIdentity(token: UUID(), url: "https://www.peacocktv.com/watch/playback/old")
+        let differentTab = PlayerIdentity(token: UUID(), url: "https://www.peacocktv.com/watch/playback/new")
+        let policy = AdAudioPolicy()
+        policy.claimAfterVerifiedMute(owned)
+        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [state(differentTab, marked: false, muted: true)]).isEmpty)
+        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [state(differentTab, marked: false, muted: true)]).isEmpty)
+        XCTAssertFalse(policy.owns(differentTab))
+    }
+
     func testIncompleteScanPreservesOwnershipButBreaksAbsenceStreak() {
         let identity = PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/owned")
         let policy = AdAudioPolicy()

@@ -1,33 +1,32 @@
 import Foundation
 
 /// Per-monitor-run ownership of tabs muted by this run. Claims never survive a
-/// stop, restart, cancellation, setup, quit, or terminal error.
+/// stop, restart, cancellation, setup, quit, or terminal error. A lease may
+/// outlive a temporary gap in supported-player discovery, but cannot act then.
 final class AdAudioPolicy {
     private struct Lease {
         var consecutiveCompleteAbsenceScans = 0
     }
 
-    private var leases: [PlayerIdentity: Lease] = [:]
+    private var leases: [UUID: Lease] = [:]
 
     func claimAfterVerifiedMute(_ identity: PlayerIdentity) {
-        leases[identity] = Lease()
+        leases[identity.token] = Lease()
     }
 
     func restoreCandidates(afterCompleteScan players: [PlayerState]) -> [PlayerIdentity] {
-        let current = Dictionary(uniqueKeysWithValues: players.map { ($0.identity, $0) })
-        leases = leases.filter { current[$0.key] != nil }
-
         var candidates: [PlayerIdentity] = []
         for player in players {
-            guard var lease = leases[player.identity] else { continue }
+            let token = player.identity.token
+            guard var lease = leases[token] else { continue }
             if !player.muted {
-                leases.removeValue(forKey: player.identity)
+                leases.removeValue(forKey: token)
             } else if player.hasAdMarker {
                 lease.consecutiveCompleteAbsenceScans = 0
-                leases[player.identity] = lease
+                leases[token] = lease
             } else {
                 lease.consecutiveCompleteAbsenceScans += 1
-                leases[player.identity] = lease
+                leases[token] = lease
                 if lease.consecutiveCompleteAbsenceScans >= 2 {
                     candidates.append(player.identity)
                 }
@@ -46,13 +45,13 @@ final class AdAudioPolicy {
     func recordRestore(_ outcome: UnmuteAfterAdOutcome, for identity: PlayerIdentity) {
         switch outcome {
         case .unmutedAndVerified, .alreadyUnmuted:
-            leases.removeValue(forKey: identity)
+            leases.removeValue(forKey: identity.token)
         case .markerReappeared:
-            guard var lease = leases[identity] else { return }
+            guard var lease = leases[identity.token] else { return }
             lease.consecutiveCompleteAbsenceScans = 0
-            leases[identity] = lease
+            leases[identity.token] = lease
         }
     }
 
-    func owns(_ identity: PlayerIdentity) -> Bool { leases[identity] != nil }
+    func owns(_ identity: PlayerIdentity) -> Bool { leases[identity.token] != nil }
 }

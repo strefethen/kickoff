@@ -53,6 +53,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
         var pageCount = 1
         var split = false
         var duplicateURLs = false
+        var peacockEpisode = 1
         var replaceWindow1 = false
         var replaceWeb1 = false
         var replaceTab1 = false
@@ -89,7 +90,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
             values.firstIndex(where: { CFEqual($0, element) })
         }
         private func pageURL(_ index: Int) -> String {
-            if providers[index] == .peacock { return "https://www.peacocktv.com/watch/playback/vod/_/\(index + 1)" + (pauseURL ? "?paused=true" : "") }
+            if providers[index] == .peacock { return "https://www.peacocktv.com/watch/playback/vod/_/\(index + peacockEpisode)" + (pauseURL ? "?paused=true" : "") }
             return duplicateURLs ? "https://www.hulu.com/watch/same" : "https://www.hulu.com/watch/\(index + 1)"
         }
         private func window(for index: Int) -> AXUIElement {
@@ -515,21 +516,22 @@ final class HuluPlayerPrepressTests: XCTestCase {
         XCTAssertEqual(unchanged.presses, 1)
     }
 
-    func testDiscoveryReusesOnlyExactStablePlayerIdentities() throws {
+    func testDiscoveryKeepsTabTokenAcrossURLChangeButRejectsStaleActionIdentity() throws {
         let chrome = FakeChrome()
         let client = ChromePlayerClient(chrome: chrome)
         let first = try XCTUnwrap(client.discoverPlayers().first)
-        let second = try XCTUnwrap(client.discoverPlayers().first)
-        XCTAssertEqual(first.identity, second.identity)
+        XCTAssertEqual(try XCTUnwrap(client.discoverPlayers().first).identity, first.identity)
 
-        chrome.duplicateURLs = true // Changes the watch URL on the same AX objects.
-        let replaced = try XCTUnwrap(client.discoverPlayers().first)
-        XCTAssertNotEqual(replaced.identity.token, first.identity.token)
+        chrome.duplicateURLs = true // Same native tab, different watch URL.
+        let navigated = try XCTUnwrap(client.discoverPlayers().first)
+        XCTAssertEqual(navigated.identity.token, first.identity.token)
+        XCTAssertNotEqual(navigated.identity, first.identity)
         XCTAssertThrowsError(try client.muteIfCurrentlyMarkedAd(
             first.identity,
-            expectedPlayers: [replaced.identity],
+            expectedPlayers: [navigated.identity],
             isCancelled: { false }
         ))
+        XCTAssertEqual(chrome.presses, 0)
     }
 
     func testSplitDuplicateURLIdentitiesRemainStableAcrossScans() throws {
@@ -544,7 +546,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
         XCTAssertEqual(Set(first.map(\.identity.token)).count, 2)
     }
 
-    func testExactNativeReferenceReplacementAndDisappearanceInvalidateIdentity() throws {
+    func testWindowAndTabReplacementInvalidateIdentityWhileWebAndButtonRebuildPreserveIt() throws {
         let windowChrome = FakeChrome()
         let windowClient = ChromePlayerClient(chrome: windowChrome)
         let originalWindow = try XCTUnwrap(windowClient.discoverPlayers().first)
@@ -555,7 +557,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
         let webClient = ChromePlayerClient(chrome: webChrome)
         let originalWeb = try XCTUnwrap(webClient.discoverPlayers().first)
         webChrome.replaceWeb1 = true
-        XCTAssertNotEqual(try XCTUnwrap(webClient.discoverPlayers().first).identity.token, originalWeb.identity.token)
+        XCTAssertEqual(try XCTUnwrap(webClient.discoverPlayers().first).identity.token, originalWeb.identity.token)
 
         let tabChrome = FakeChrome()
         let tabClient = ChromePlayerClient(chrome: tabChrome)
@@ -567,7 +569,7 @@ final class HuluPlayerPrepressTests: XCTestCase {
         let buttonClient = ChromePlayerClient(chrome: buttonChrome)
         let originalButton = try XCTUnwrap(buttonClient.discoverPlayers().first)
         buttonChrome.replaceButton1 = true
-        XCTAssertNotEqual(try XCTUnwrap(buttonClient.discoverPlayers().first).identity.token, originalButton.identity.token)
+        XCTAssertEqual(try XCTUnwrap(buttonClient.discoverPlayers().first).identity.token, originalButton.identity.token)
 
         let goneChrome = FakeChrome()
         let goneClient = ChromePlayerClient(chrome: goneChrome)
@@ -579,6 +581,64 @@ final class HuluPlayerPrepressTests: XCTestCase {
             expectedPlayers: [],
             isCancelled: { false }
         ))
+    }
+
+    func testSameTabIdentityReturnsAfterCompletePlayerGap() throws {
+        let chrome = FakeChrome()
+        chrome.providers[0] = .peacock
+        let client = ChromePlayerClient(chrome: chrome)
+        let first = try XCTUnwrap(client.discoverPlayers().first)
+        chrome.pageCount = 0
+        XCTAssertTrue(try client.discoverPlayers().isEmpty)
+        XCTAssertThrowsError(try client.unmuteIfAdMarkerAbsent(
+            first.identity, expectedPlayers: [], isCancelled: { false }
+        ))
+        XCTAssertEqual(chrome.presses, 0)
+
+        chrome.pageCount = 1
+        chrome.peacockEpisode = 2
+        chrome.markerPresent[0] = false
+        let resumed = try XCTUnwrap(client.discoverPlayers().first)
+        XCTAssertEqual(resumed.identity.token, first.identity.token)
+        XCTAssertNotEqual(resumed.identity.url, first.identity.url)
+
+        chrome.pageCount = 0
+        XCTAssertTrue(try client.discoverPlayers().isEmpty)
+        chrome.pageCount = 1
+        chrome.replaceTab1 = true
+        let differentTab = try XCTUnwrap(client.discoverPlayers().first)
+        XCTAssertNotEqual(differentTab.identity.token, first.identity.token)
+    }
+
+    func testPeacockOwnedMuteRestoresAfterEpisodeAndControlReplacement() throws {
+        let chrome = FakeChrome()
+        chrome.providers[0] = .peacock
+        chrome.pauseURL = false
+        let client = ChromePlayerClient(chrome: chrome)
+        let policy = AdAudioPolicy()
+        let ad = try XCTUnwrap(client.discoverPlayers().first)
+        XCTAssertEqual(try client.muteIfCurrentlyMarkedAd(
+            ad.identity, expectedPlayers: [ad.identity], isCancelled: { false }
+        ), .mutedAndVerified)
+        policy.claimAfterVerifiedMute(ad.identity)
+
+        chrome.markerPresent[0] = false
+        chrome.peacockEpisode = 2
+        chrome.replaceWeb1 = true
+        chrome.replaceButton1 = true
+        chrome.videoIdentifier = "core-video-tape"
+        let episode = try XCTUnwrap(client.discoverPlayers().first)
+        XCTAssertEqual(episode.identity.token, ad.identity.token)
+        XCTAssertNotEqual(episode.identity.url, ad.identity.url)
+        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [episode]).isEmpty)
+        XCTAssertEqual(policy.restoreCandidates(afterCompleteScan: [episode]), [episode.identity])
+        XCTAssertEqual(try client.unmuteIfAdMarkerAbsent(
+            episode.identity, expectedPlayers: [episode.identity], isCancelled: { false }
+        ), .unmutedAndVerified)
+        policy.recordRestore(.unmutedAndVerified, for: episode.identity)
+        XCTAssertFalse(policy.owns(episode.identity))
+        XCTAssertEqual(chrome.audioState[0], .playing)
+        XCTAssertEqual(chrome.presses, 2)
     }
 
     func testGuardedUnmuteRequiresFreshCompleteAbsenceAndUsesOnePress() throws {
@@ -771,20 +831,34 @@ final class HuluPlayerPrepressTests: XCTestCase {
         XCTAssertEqual(chrome.presses, 1)
     }
 
-    func testProductionMonitorRestoresOwnedPeacockMuteAndPreservesManualHuluMute() {
+    func testProductionMonitorRestoresOwnedPeacockMuteAcrossEpisodeAndPreservesManualHuluMute() {
         let chrome = FakeChrome()
-        chrome.providers = [.hulu, .peacock]
+        chrome.providers = [.peacock, .hulu]
         chrome.pageCount = 2
-        chrome.markerPresent[0] = false
-        chrome.audioState[0] = .muted
+        chrome.pauseURL = false
+        chrome.markerPresent[1] = false
+        chrome.audioState[1] = .muted
         let queue = DispatchQueue(label: "PeacockProductionMonitorTest")
         let monitor = AdMonitor(operationQueue: queue, interval: 0.005) { ChromePlayerClient(chrome: chrome) }
-        let restored = expectation(description: "Peacock content audio restored after two complete absence scans")
+        let restored = expectation(description: "Peacock content audio restored after episode change")
         var completed = false
+        var gapObserved = false
         monitor.onStatusChange = { status in
             if case let .monitoring(_, muted, unmuted) = status {
-                if muted == 1 { queue.async { chrome.markerPresent[1] = false } }
+                if muted == 1 { queue.async { chrome.pageCount = 0 } }
                 if unmuted == 1, !completed { completed = true; restored.fulfill() }
+            }
+            if case .waitingForPlayers = status, !gapObserved {
+                gapObserved = true
+                XCTAssertEqual(chrome.presses, 1)
+                queue.async {
+                    chrome.pageCount = 2
+                    chrome.markerPresent[0] = false
+                    chrome.peacockEpisode = 2
+                    chrome.replaceWeb1 = true
+                    chrome.replaceButton1 = true
+                    chrome.videoIdentifier = "core-video-tape"
+                }
             }
             if case let .failed(message) = status { XCTFail(message) }
         }
@@ -793,8 +867,9 @@ final class HuluPlayerPrepressTests: XCTestCase {
         let drained = expectation(description: "monitor drained")
         monitor.stopAndDrain { drained.fulfill() }
         wait(for: [drained], timeout: 2)
+        XCTAssertTrue(gapObserved)
         XCTAssertEqual(chrome.presses, 2)
-        XCTAssertEqual(chrome.audioState, [.muted, .playing])
+        XCTAssertEqual(chrome.audioState, [.playing, .muted])
     }
 
     func testPeacockIdentityReplacementAndCancellationNeverPress() throws {

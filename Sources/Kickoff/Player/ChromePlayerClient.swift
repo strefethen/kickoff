@@ -21,6 +21,7 @@ final class ChromePlayerClient: PlayerControlling {
     private let chrome: ChromeAccessibilityAccessing
     private let tabAudio: ChromeTabAudioClient
     private var bindings: [UUID: BoundPlayer] = [:]
+    private var activeTokens: Set<UUID> = []
 
     init(chrome: ChromeAccessibilityAccessing, readbackTimeout: TimeInterval = 2) {
         self.chrome = chrome
@@ -63,7 +64,10 @@ final class ChromePlayerClient: PlayerControlling {
                 next[identity.token] = bound
                 result.append(state(live))
             }
-            bindings = next
+            // Keep tab references across a temporary gap in supported playback.
+            // Only active bindings may authorize an audio action.
+            bindings.merge(next) { _, current in current }
+            activeTokens = Set(next.keys)
             return result
         }
     }
@@ -187,9 +191,10 @@ final class ChromePlayerClient: PlayerControlling {
     }
 
     private func resolve(_ identity: PlayerIdentity, expectedPlayers: [PlayerIdentity]) throws -> LivePlayer {
-        guard let target = bindings[identity.token], target.identity == identity,
-              expectedPlayers.count == bindings.count,
-              expectedPlayers.allSatisfy({ bindings[$0.token] != nil }) else {
+        guard let target = bindings[identity.token], activeTokens.contains(identity.token),
+              target.identity == identity,
+              expectedPlayers.count == activeTokens.count,
+              expectedPlayers.allSatisfy({ activeTokens.contains($0.token) && bindings[$0.token]?.identity == $0 }) else {
             throw AccessibilityFailure("The current Ad Muting pass no longer owns this Chrome player identity.")
         }
         let areas = try currentWatchAreas()
@@ -273,12 +278,12 @@ final class ChromePlayerClient: PlayerControlling {
         for area: ChromeWatchArea,
         audio: ChromeTabAudioBinding
     ) -> PlayerIdentity? {
+        // The native tab can persist when playback replaces its page or audio button.
         let matches = bindings.values.filter {
-            sameArea($0.area, area) &&
-                CFEqual($0.audio.tab, audio.tab) &&
-                CFEqual($0.audio.button, audio.button)
+            CFEqual($0.area.window, area.window) && CFEqual($0.audio.tab, audio.tab)
         }
-        return matches.count == 1 ? matches[0].identity : nil
+        guard matches.count == 1 else { return nil }
+        return PlayerIdentity(token: matches[0].identity.token, url: area.url)
     }
 
 }
