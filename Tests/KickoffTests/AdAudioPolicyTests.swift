@@ -54,14 +54,19 @@ final class AdAudioPolicyTests: XCTestCase {
         XCTAssertFalse(policy.owns(identity))
     }
 
-    func testTemporaryPlayerGapPreservesOwnedMute() {
+    func testTemporaryPlayerGapPreservesLeaseButResetsAbsenceStreak() {
         let identity = PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/a")
-        let policy = AdAudioPolicy()
-        policy.claimAfterVerifiedMute(identity)
-        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: []).isEmpty)
-        XCTAssertTrue(policy.owns(identity))
-        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [state(identity, marked: false, muted: true)]).isEmpty)
-        XCTAssertEqual(policy.restoreCandidates(afterCompleteScan: [state(identity, marked: false, muted: true)]), [identity])
+        let other = PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/other")
+        let absent = state(identity, marked: false, muted: true)
+        for gap in [[], [state(other, marked: false, muted: false)]] {
+            let policy = AdAudioPolicy()
+            policy.claimAfterVerifiedMute(identity)
+            XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [absent]).isEmpty)
+            XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: gap).isEmpty)
+            XCTAssertTrue(policy.owns(identity))
+            XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [absent]).isEmpty)
+            XCTAssertEqual(policy.restoreCandidates(afterCompleteScan: [absent]), [identity])
+        }
     }
 
     func testDifferentTabTokenCannotInheritAnOwnedMute() {

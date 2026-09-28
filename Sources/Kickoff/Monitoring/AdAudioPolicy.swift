@@ -15,6 +15,11 @@ final class AdAudioPolicy {
     }
 
     func restoreCandidates(afterCompleteScan players: [PlayerState]) -> [PlayerIdentity] {
+        let present = Set(players.map { $0.identity.token })
+        for token in leases.keys where !present.contains(token) {
+            leases[token]?.consecutiveCompleteAbsenceScans = 0
+        }
+
         var candidates: [PlayerIdentity] = []
         for player in players {
             let token = player.identity.token
