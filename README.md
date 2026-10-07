@@ -4,8 +4,15 @@
 
 # Kickoff
 
-Kickoff is a native macOS menu bar app that sets up one, two, or four Google Chrome panes on a chosen monitor.
-It mutes detectable ads on Hulu and Peacock (experimental).
+[![CI](https://img.shields.io/github/actions/workflow/status/strefethen/kickoff/ci.yml?branch=main&style=for-the-badge&logo=github&label=CI)](https://github.com/strefethen/kickoff/actions/workflows/ci.yml?query=branch%3Amain)
+
+Football weekends often mean several games you want to watch at once. Streaming a game or a show on your TV also means reaching for the mute button every time the ads start. Kickoff helps with both: put your games side by side and automatically quiet detectable ads.
+
+Kickoff is a native macOS menu bar app that arranges Google Chrome into one, two, or four viewing panes on your chosen monitor, including a TV connected to your Mac. Choose the game or program in each pane, then let Kickoff handle ad muting on Hulu and Peacock (experimental).
+
+- **Follow multiple games:** Watch two or four games at once without repeatedly switching tabs or arranging windows by hand.
+- **Settle in for a show:** Use a single pane for a program on your monitor or connected TV.
+- **Quiet the commercial breaks:** Kickoff mutes ads it can detect and restores audio after the ad marker clears. Ads still play, and ads without a detectable marker may remain audible.
 
 ![Four football games in Chrome](Resources/Screenshot.webp)
 
