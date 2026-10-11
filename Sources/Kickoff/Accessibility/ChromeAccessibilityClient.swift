@@ -43,7 +43,7 @@ final class ChromeAccessibilityClient: ChromeAccessibilityAccessing {
         }
         let matches = NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome")
         guard matches.count == 1, let chrome = matches.first else {
-            throw AccessibilityFailure("Expected one running Google Chrome process; found \(matches.count).")
+            throw ChromeProcessUnavailable(description: "Expected one running Google Chrome process; found \(matches.count).")
         }
         pid = chrome.processIdentifier
         application = AXUIElementCreateApplication(pid)
@@ -75,9 +75,11 @@ final class ChromeAccessibilityClient: ChromeAccessibilityAccessing {
     }
 
     func windows() throws -> [AXUIElement] {
-        guard NSRunningApplication(processIdentifier: pid)?.isTerminated == false,
-              let windows = try attribute(application, kAXWindowsAttribute) as? [AXUIElement] else {
-            throw AccessibilityFailure("Chrome exited or did not expose its windows.")
+        guard NSRunningApplication(processIdentifier: pid)?.isTerminated == false else {
+            throw ChromeProcessUnavailable(description: "Chrome exited; waiting for Chrome to reopen.")
+        }
+        guard let windows = try attribute(application, kAXWindowsAttribute) as? [AXUIElement] else {
+            throw AccessibilityFailure("Chrome did not expose its windows.")
         }
         return windows
     }

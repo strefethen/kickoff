@@ -11,6 +11,11 @@ struct AccessibilityFailure: Error, CustomStringConvertible, Equatable {
     }
 }
 
+/// Process binding is no longer valid; discovery must create a new client.
+struct ChromeProcessUnavailable: Error, CustomStringConvertible, Equatable {
+    let description: String
+}
+
 struct AccessibilityNode {
     let element: AXUIElement
     let role: String

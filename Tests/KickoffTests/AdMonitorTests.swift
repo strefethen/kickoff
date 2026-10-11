@@ -278,34 +278,121 @@ final class AdMonitorTests: XCTestCase {
         XCTAssertTrue(second.restoreCalls().isEmpty)
     }
 
-    func testErrorDiscardsOwnedMuteBeforeFreshRun() {
-        let identity = PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/owned")
-        let ad = PlayerState(identity: identity, windowIndex: 0, muted: false, audioDescription: "playing", hasAdMarker: true)
-        let absentMuted = PlayerState(identity: identity, windowIndex: 0, muted: true, audioDescription: "muted", hasAdMarker: false)
-        let failedRun = FakePlayerClient(players: [ad])
-        failedRun.discoveryErrors[1] = FakeFailure.mutationOrReadback
-        let freshRun = FakePlayerClient(players: [absentMuted])
-        let lock = NSLock()
+    func testProcessLossRecreatesClientWithoutTransferringOwnedMute() {
+        let ad = player("https://www.hulu.com/watch/owned", marked: true)
+        let absent = PlayerState(identity: ad.identity, windowIndex: 0, muted: true,
+                                 audioDescription: "muted", hasAdMarker: false)
+        let first = FakePlayerClient(players: [ad])
+        first.discoveryErrors[1] = ChromeProcessUnavailable(description: "Chrome exited")
+        // Reusing even the same identity must not transfer ownership to a new process.
+        let second = FakePlayerClient(players: [absent])
         var factories = 0
-        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01) {
-            lock.lock(); defer { lock.unlock() }
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01,
+                                discoveryRetryInterval: 0.01) {
             factories += 1
-            return factories == 1 ? failedRun : freshRun
+            return factories == 1 ? first : second
         }
-        let failed = expectation(description: "run failed")
-        monitor.onStatusChange = { if case .failed = $0 { failed.fulfill() } }
-        monitor.start()
-        wait(for: [failed], timeout: 2)
-        XCTAssertTrue(failedRun.restoreCalls().isEmpty)
-
-        let rescanned = expectation(description: "fresh run scanned")
-        rescanned.assertForOverFulfill = false
-        monitor.onStatusChange = { _ in if freshRun.discoveryCount >= 3 { rescanned.fulfill() } }
-        monitor.start()
-        wait(for: [rescanned], timeout: 2)
-        monitor.stopAndDrain()
-        XCTAssertTrue(freshRun.restoreCalls().isEmpty)
+        awaitStatus({ if case .monitoring = $0 { return second.discoveryCount >= 3 }; return false },
+                    monitor: monitor) { monitor.start() }
+        XCTAssertEqual(factories, 2)
+        XCTAssertEqual(first.calls(), [ad.identity.token])
+        XCTAssertTrue(first.restoreCalls().isEmpty)
+        XCTAssertTrue(second.restoreCalls().isEmpty)
     }
+
+    func testReadFailureRetainsOwnershipButRequiresTwoFreshCompleteScans() {
+        let ad = player("https://www.hulu.com/watch/owned", marked: true)
+        let absent = PlayerState(identity: ad.identity, windowIndex: 0, muted: true,
+                                 audioDescription: "muted", hasAdMarker: false)
+        let fake = FakePlayerClient(players: [ad])
+        fake.discoveries = [[ad], [absent], [absent], [absent], [absent]]
+        fake.discoveryErrors[2] = AccessibilityFailure("incomplete read")
+        var factories = 0
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01,
+                                discoveryRetryInterval: 0.01) { factories += 1; return fake }
+        let restored = expectation(description: "restored after fresh evidence")
+        monitor.onStatusChange = { status in
+            if case .recovering = status {
+                XCTAssertTrue(monitor.isRunning)
+                XCTAssertTrue(fake.restoreCalls().isEmpty)
+                XCTAssertEqual(fake.calls().count, 1)
+            }
+            if status == .monitoring(players: 1, newlyMuted: 0, newlyUnmuted: 1) {
+                XCTAssertEqual(fake.discoveryCount, 5)
+                restored.fulfill()
+            }
+        }
+        monitor.start()
+        wait(for: [restored], timeout: 2)
+        monitor.stopAndDrain()
+        XCTAssertEqual(factories, 1)
+        XCTAssertEqual(fake.restoreCalls(), [ad.identity.token])
+    }
+
+    func testInitialFactoryFailureRecoversAtBoundedCadence() {
+        let fake = FakePlayerClient(players: [])
+        var attempts: [TimeInterval] = []
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 60,
+                                discoveryRetryInterval: 0.05) {
+            attempts.append(ProcessInfo.processInfo.systemUptime)
+            if attempts.count <= 2 { throw ChromeProcessUnavailable(description: "Chrome not running") }
+            return fake
+        }
+        let recovered = expectation(description: "factory recovered")
+        var recovering = 0
+        monitor.onStatusChange = { status in
+            if case let .recovering(message, seconds) = status {
+                recovering += 1
+                XCTAssertTrue(monitor.isRunning)
+                XCTAssertEqual(seconds, 1)
+                XCTAssertEqual(message, "Chrome not running")
+                XCTAssertTrue(status.message.contains("recovering"))
+            }
+            if status == .waitingForPlayers { recovered.fulfill() }
+        }
+        monitor.start()
+        wait(for: [recovered], timeout: 2)
+        monitor.stopAndDrain()
+        XCTAssertEqual(recovering, 2)
+        XCTAssertEqual(attempts.count, 3)
+        XCTAssertGreaterThanOrEqual(attempts[1] - attempts[0], 0.045)
+        XCTAssertGreaterThanOrEqual(attempts[2] - attempts[1], 0.045)
+    }
+
+    func testRepeatedDiscoveryFailuresDoNoActionsAndStopCancelsRetry() {
+        let ad = player("https://www.hulu.com/watch/ad", marked: true)
+        let fake = FakePlayerClient(players: [ad])
+        for index in 0..<10 { fake.discoveryErrors[index] = AccessibilityFailure("read unavailable") }
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.001,
+                                discoveryRetryInterval: 0.05) { fake }
+        let twice = expectation(description: "two failed reads")
+        let unwanted = expectation(description: "no retry after stop")
+        unwanted.isInverted = true
+        monitor.onStatusChange = { status in
+            if case .recovering = status, fake.discoveryCount == 2 { twice.fulfill() }
+        }
+        monitor.start()
+        wait(for: [twice], timeout: 1)
+        let drained = expectation(description: "drained")
+        monitor.stopAndDrain { drained.fulfill() }
+        wait(for: [drained], timeout: 1)
+        fake.discoverStarted = { unwanted.fulfill() }
+        wait(for: [unwanted], timeout: 0.12)
+        XCTAssertEqual(fake.discoveryCount, 2)
+        XCTAssertTrue(fake.calls().isEmpty)
+        XCTAssertTrue(fake.restoreCalls().isEmpty)
+        XCTAssertEqual(monitor.status, .stopped)
+    }
+
+    func testCancellationErrorFromDiscoveryIsNeverRetried() {
+        let fake = FakePlayerClient(players: [])
+        fake.discoveryErrors[0] = MonitoringCancelled()
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01,
+                                discoveryRetryInterval: 0.01) { fake }
+        awaitStatus({ if case .failed = $0 { return true }; return false }, monitor: monitor) { monitor.start() }
+        XCTAssertEqual(fake.discoveryCount, 1)
+    }
+
     func testTemporaryUnavailableDiscoveryRecoversWithoutRecreatingClient() {
         let ad = player("https://www.peacocktv.com/watch/playback/vod/one", marked: true)
         let fake = FakePlayerClient(players: [ad])

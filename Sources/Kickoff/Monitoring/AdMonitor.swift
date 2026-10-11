@@ -5,6 +5,7 @@ enum AdMonitorStatus: Equatable {
     case scanning
     case waitingForPlayers
     case waitingForPlayback
+    case recovering(message: String, retryIntervalSeconds: Int)
     case audioControlsUnavailable(retryIntervalSeconds: Int)
     case waitingForAudioControls(secondsRemaining: Int)
     case monitoring(players: Int, newlyMuted: Int, newlyUnmuted: Int)
@@ -20,6 +21,8 @@ enum AdMonitorStatus: Equatable {
             return "Ad muting — waiting for a Chrome player"
         case .waitingForPlayback:
             return "Ad muting — waiting for playback to resume"
+        case let .recovering(message, retryIntervalSeconds):
+            return "Ad muting — recovering; checking every \(retryIntervalSeconds)s: \(message)"
         case let .audioControlsUnavailable(retryIntervalSeconds):
             return "Ad muting — audio controls unavailable; checking every \(retryIntervalSeconds)s"
         case let .waitingForAudioControls(secondsRemaining):
@@ -68,11 +71,13 @@ final class AdMonitor {
     private let audioAvailabilityTimeout: TimeInterval
     private let monotonicTime: () -> TimeInterval
     private let audioRetryInterval: TimeInterval
+    private let discoveryRetryInterval: TimeInterval
     private enum PassResult {
         case complete(players: Int, newlyMuted: Int, newlyUnmuted: Int)
         case waitingForAudio(remaining: TimeInterval)
         case waitingForPlayback
         case audioRetry
+        case recovering(String)
     }
     private final class RunContext {
         let player: PlayerControlling
@@ -100,6 +105,7 @@ final class AdMonitor {
         interval: TimeInterval = 2.5,
         audioAvailabilityTimeout: TimeInterval = 30,
         audioRetryInterval: TimeInterval = 30,
+        discoveryRetryInterval: TimeInterval = 5,
         monotonicTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         playerFactory: @escaping PlayerFactory
     ) {
@@ -107,6 +113,8 @@ final class AdMonitor {
         self.interval = interval
         precondition(audioAvailabilityTimeout.isFinite && audioAvailabilityTimeout > 0)
         precondition(audioRetryInterval.isFinite && audioRetryInterval > 0)
+        precondition(discoveryRetryInterval.isFinite && discoveryRetryInterval > 0)
+        self.discoveryRetryInterval = discoveryRetryInterval
         self.audioRetryInterval = audioRetryInterval
         self.playerFactory = playerFactory
         self.audioAvailabilityTimeout = audioAvailabilityTimeout
@@ -159,7 +167,13 @@ final class AdMonitor {
     private func runPass(run: UInt64, token: MonitorCancellation) {
         do {
             try token.check()
-            let context = try context(for: run)
+            let context: RunContext
+            do {
+                context = try self.context(for: run)
+            } catch {
+                try recoverDiscoveryFailure(error, run: run, token: token)
+                return
+            }
             if !context.isSlowAudioRetry, let since = context.audioUnavailableSince,
                audioTimeRemaining(since: since) <= 0 {
                 context.isSlowAudioRetry = true
@@ -190,6 +204,9 @@ final class AdMonitor {
                 } else {
                     completePass(run: run, token: token, result: .waitingForAudio(remaining: remaining))
                 }
+                return
+            } catch {
+                try recoverDiscoveryFailure(error, run: run, token: token)
                 return
             }
             try token.check()
@@ -244,6 +261,18 @@ final class AdMonitor {
         }
     }
 
+    /// Only factory/discovery failures enter this path; audio actions never do.
+    private func recoverDiscoveryFailure(_ error: Error, run: UInt64, token: MonitorCancellation) throws {
+        try token.check()
+        if error is MonitoringCancelled { throw error }
+        if error is ChromeProcessUnavailable {
+            discardContext(for: run)
+        } else if operationRun == run {
+            operationContext?.policy.interruptCompleteAbsenceScans()
+        }
+        completePass(run: run, token: token, result: .recovering(Self.actionableMessage(for: error)))
+    }
+
     private func completePass(run: UInt64, token: MonitorCancellation, result: PassResult) {
         DispatchQueue.main.async { [weak self] in
             self?.finishPass(run: run, token: token, result: .success(result))
@@ -267,6 +296,9 @@ final class AdMonitor {
         case .success(.waitingForPlayback):
             publish(.waitingForPlayback)
             enqueuePass(run: run, token: token, delay: interval)
+        case let .success(.recovering(message)):
+            publish(.recovering(message: message, retryIntervalSeconds: Int(ceil(discoveryRetryInterval))))
+            enqueuePass(run: run, token: token, delay: discoveryRetryInterval)
         case .success(.audioRetry):
             publish(.audioControlsUnavailable(retryIntervalSeconds: Int(ceil(audioRetryInterval))))
             enqueuePass(run: run, token: token, delay: audioRetryInterval)

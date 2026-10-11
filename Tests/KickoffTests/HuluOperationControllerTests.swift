@@ -8,12 +8,20 @@ final class HuluOperationControllerTests: XCTestCase {
     }
 
     private final class EmptyClient: PlayerControlling {
-        func discoverPlayers() throws -> [PlayerState] { [] }
+        let failsAction: Bool
+        init(failsAction: Bool = false) { self.failsAction = failsAction }
+        func discoverPlayers() throws -> [PlayerState] {
+            failsAction ? [PlayerState(identity: PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/test"),
+                                      windowIndex: 0, muted: false, audioDescription: "playing", hasAdMarker: true)] : []
+        }
         func muteIfCurrentlyMarkedAd(
             _ player: PlayerIdentity,
             expectedPlayers: [PlayerIdentity],
             isCancelled: () -> Bool
-        ) throws -> MuteMarkedAdOutcome { .markerDisappeared }
+        ) throws -> MuteMarkedAdOutcome {
+            if failsAction { throw StubError.expected }
+            return .markerDisappeared
+        }
         func unmuteIfAdMarkerAbsent(
             _ player: PlayerIdentity,
             expectedPlayers: [PlayerIdentity],
@@ -114,35 +122,28 @@ final class HuluOperationControllerTests: XCTestCase {
         wait(for: [drained], timeout: 1)
     }
 
-    func testMonitorErrorDoesNotRetryPendingDefaultStart() {
+    func testFactoryFailureKeepsIntentAndRecoversWithoutExplicitRetry() {
         let queue = DispatchQueue(label: #function)
-        let failed = expectation(description: "monitor failed")
-        let retried = expectation(description: "monitor did not retry")
-        retried.isInverted = true
-        var factoryCalls = 0
-        let monitor = AdMonitor(operationQueue: queue, interval: 60) {
-            factoryCalls += 1
-            if factoryCalls > 1 { retried.fulfill() }
-            throw StubError.expected
+        var factories = 0
+        let monitor = AdMonitor(operationQueue: queue, interval: 60, discoveryRetryInterval: 0.01) {
+            factories += 1
+            if factories == 1 { throw StubError.expected }
+            return EmptyClient()
         }
-        let controller = HuluOperationController(
-            monitor: monitor,
-            operationQueue: queue,
-            prepareSetup: { _ in {} }
-        )
+        let controller = HuluOperationController(monitor: monitor, operationQueue: queue, prepareSetup: { _ in {} })
+        let recovered = expectation(description: "automatically recovered")
         controller.onChange = {
-            if case .failed = controller.monitorStatus { failed.fulfill() }
+            if case .recovering = controller.monitorStatus {
+                XCTAssertTrue(controller.isMonitoring)
+                XCTAssertTrue(controller.isAdMutingEnabled)
+                XCTAssertFalse(controller.canRetryAdMuting)
+            }
+            if controller.monitorStatus == .waitingForPlayers { recovered.fulfill() }
         }
-
         controller.startDefaultMonitoringIfNeeded(accessibilityTrusted: true)
-        wait(for: [failed], timeout: 1)
-        XCTAssertFalse(controller.isMonitoring)
-        XCTAssertTrue(controller.isAdMutingEnabled)
-        XCTAssertTrue(controller.canRetryAdMuting)
-
-        controller.startDefaultMonitoringIfNeeded(accessibilityTrusted: true)
-        wait(for: [retried], timeout: 0.05)
-        XCTAssertEqual(factoryCalls, 1)
+        wait(for: [recovered], timeout: 1)
+        XCTAssertEqual(factories, 2)
+        controller.stopMonitoring()
     }
 
     func testTerminalErrorPreservesIntentAndOnlyExplicitRetryRestarts() {
@@ -150,8 +151,7 @@ final class HuluOperationControllerTests: XCTestCase {
         var factories = 0
         let monitor = AdMonitor(operationQueue: queue, interval: 60) {
             factories += 1
-            if factories == 1 { throw StubError.expected }
-            return EmptyClient()
+            return EmptyClient(failsAction: factories == 1)
         }
         let controller = HuluOperationController(monitor: monitor, operationQueue: queue, prepareSetup: { _ in {} })
         let failed = expectation(description: "failed with enabled intent")
@@ -176,7 +176,7 @@ final class HuluOperationControllerTests: XCTestCase {
         XCTAssertEqual(factories, 2)
     }
 
-    func testSetupAndQuitConsumePendingDefaultStart() {
+    func testPreparedSetupResumesDefaultIntentAndQuitConsumesPendingStart() {
         let setupQueue = DispatchQueue(label: "\(#function).setup")
         let setupMonitor = AdMonitor(operationQueue: setupQueue, interval: 60) { EmptyClient() }
         let setupFinished = expectation(description: "setup finished")
@@ -192,7 +192,9 @@ final class HuluOperationControllerTests: XCTestCase {
         setupController.startSetup()
         wait(for: [setupFinished], timeout: 1)
         setupController.startDefaultMonitoringIfNeeded(accessibilityTrusted: true)
-        XCTAssertFalse(setupController.isMonitoring)
+        XCTAssertTrue(setupController.isAdMutingEnabled)
+        XCTAssertTrue(setupController.isMonitoring)
+        setupController.stopMonitoring()
 
         let quitQueue = DispatchQueue(label: "\(#function).quit")
         let quitMonitor = AdMonitor(operationQueue: quitQueue, interval: 60) { EmptyClient() }
@@ -213,8 +215,10 @@ final class HuluOperationControllerTests: XCTestCase {
         let queue = DispatchQueue(label: #function)
         let scanBegan = expectation(description: "scan began")
         let gate = DispatchSemaphore(value: 0)
+        var factories = 0
         let monitor = AdMonitor(operationQueue: queue, interval: 60) {
-            BlockingClient(started: scanBegan, gate: gate)
+            factories += 1
+            return factories == 1 ? BlockingClient(started: scanBegan, gate: gate) : EmptyClient()
         }
         let setupRan = expectation(description: "setup ran")
         let controller = HuluOperationController(
@@ -244,8 +248,10 @@ final class HuluOperationControllerTests: XCTestCase {
         let queue = DispatchQueue(label: #function)
         let scanBegan = expectation(description: "scan began")
         let gate = DispatchSemaphore(value: 0)
+        var factories = 0
         let monitor = AdMonitor(operationQueue: queue, interval: 60) {
-            BlockingClient(started: scanBegan, gate: gate)
+            factories += 1
+            return factories == 1 ? BlockingClient(started: scanBegan, gate: gate) : EmptyClient()
         }
         let setupDidNotRun = expectation(description: "setup did not run")
         setupDidNotRun.isInverted = true
@@ -292,8 +298,10 @@ final class HuluOperationControllerTests: XCTestCase {
         let queue = DispatchQueue(label: #function)
         let scanBegan = expectation(description: "scan began")
         let gate = DispatchSemaphore(value: 0)
+        var factories = 0
         let monitor = AdMonitor(operationQueue: queue, interval: 60) {
-            BlockingClient(started: scanBegan, gate: gate)
+            factories += 1
+            return factories == 1 ? BlockingClient(started: scanBegan, gate: gate) : EmptyClient()
         }
         let setupRan = expectation(description: "setup ran")
         let preferences = WebsitePreferences(defaults: defaults())
@@ -325,5 +333,72 @@ final class HuluOperationControllerTests: XCTestCase {
         XCTAssertEqual(capturedWebsite?.absoluteString, "https://first.example/path")
         gate.signal()
         wait(for: [setupRan], timeout: 1)
+    }
+
+    func testSetupFailureResumesEnabledMonitoring() {
+        let queue = DispatchQueue(label: #function)
+        let monitor = AdMonitor(operationQueue: queue, interval: 60) { EmptyClient() }
+        let controller = HuluOperationController(monitor: monitor, operationQueue: queue,
+                                                 prepareSetup: { _ in { throw StubError.expected } })
+        let failed = expectation(description: "setup failure reported")
+        controller.onSetupFailure = { _ in
+            XCTAssertTrue(controller.isMonitoring, "Resume before a modal setup-failure alert")
+            failed.fulfill()
+        }
+        controller.startMonitoring()
+        controller.startSetup()
+        XCTAssertTrue(controller.isAdMutingEnabled)
+        XCTAssertFalse(controller.isMonitoring)
+        wait(for: [failed], timeout: 1)
+        XCTAssertTrue(controller.isMonitoring)
+        controller.stopMonitoring()
+    }
+
+    func testExplicitOffBeforeOrDuringSetupPreventsResume() {
+        for stopDuringSetup in [false, true] {
+            let queue = DispatchQueue(label: "\(#function).\(stopDuringSetup)")
+            let monitor = AdMonitor(operationQueue: queue, interval: 60) { EmptyClient() }
+            let controller = HuluOperationController(monitor: monitor, operationQueue: queue, prepareSetup: { _ in {} })
+            let finished = expectation(description: "setup finished")
+            controller.onChange = { if controller.status == "Chrome setup complete" { finished.fulfill() } }
+            if !stopDuringSetup { controller.stopMonitoring() }
+            controller.startSetup()
+            if stopDuringSetup { controller.stopMonitoring() }
+            wait(for: [finished], timeout: 1)
+            XCTAssertFalse(controller.isAdMutingEnabled)
+            XCTAssertFalse(controller.isMonitoring)
+        }
+    }
+
+    func testInvalidPreparationLeavesPendingDefaultStart() {
+        let queue = DispatchQueue(label: #function)
+        let monitor = AdMonitor(operationQueue: queue, interval: 60) { EmptyClient() }
+        let controller = HuluOperationController(monitor: monitor, operationQueue: queue,
+                                                 prepareSetup: { _ in throw StubError.expected })
+        controller.startSetup()
+        XCTAssertFalse(controller.isSettingUp)
+        XCTAssertTrue(controller.isAdMutingEnabled)
+        controller.startDefaultMonitoringIfNeeded(accessibilityTrusted: true)
+        XCTAssertTrue(controller.isMonitoring)
+        controller.stopMonitoring()
+    }
+
+    func testQuitDuringRunningSetupPreventsResume() {
+        let queue = DispatchQueue(label: #function)
+        let monitor = AdMonitor(operationQueue: queue, interval: 60) { EmptyClient() }
+        let began = expectation(description: "setup began")
+        let gate = DispatchSemaphore(value: 0)
+        let controller = HuluOperationController(monitor: monitor, operationQueue: queue,
+                                                 prepareSetup: { _ in { began.fulfill(); gate.wait() } })
+        controller.startSetup()
+        wait(for: [began], timeout: 1)
+        let quit = expectation(description: "quit drained")
+        controller.stopForQuit { quit.fulfill() }
+        gate.signal()
+        wait(for: [quit], timeout: 1)
+        controller.startSetup()
+        XCTAssertFalse(controller.isMonitoring)
+        XCTAssertFalse(controller.isAdMutingEnabled)
+        XCTAssertFalse(controller.isSettingUp)
     }
 }

@@ -83,8 +83,7 @@ final class HuluOperationController {
 
     func startSetup(mode: ChromeSetupMode = .split) {
         dispatchPrecondition(condition: .onQueue(.main))
-        shouldStartDefaultMonitoring = false
-        guard !isSettingUp else { return }
+        guard !isSettingUp, !isQuitting else { return }
         let setup: () throws -> Void
         do {
             setup = try prepareSetup(mode)
@@ -95,7 +94,7 @@ final class HuluOperationController {
             onSetupFailure?(failure)
             return
         }
-        isAdMutingEnabled = false
+        shouldStartDefaultMonitoring = false
         isSettingUp = true
         status = "Stopping ad muting before Chrome setup…"
         monitor.stopAndDrain { [weak self] in
@@ -116,8 +115,8 @@ final class HuluOperationController {
                 }
             }
         }
-        // stopAndDrain clears isRunning synchronously. Publish afterward so
-        // the checked menu item turns off in the same setup action.
+        // Monitoring is suspended synchronously, while the checked menu item
+        // continues to reflect the user's enabled intent.
         onChange?()
     }
 
@@ -135,6 +134,7 @@ final class HuluOperationController {
         isSettingUp = false
         status = failure == nil ? "Chrome setup complete" : "Setup failed: \(failure!)"
         onChange?()
+        if isAdMutingEnabled, !isSettingUp, !isQuitting { monitor.start() }
         if let failure { onSetupFailure?(failure) }
     }
 }
