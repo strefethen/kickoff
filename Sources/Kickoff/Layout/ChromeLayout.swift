@@ -388,8 +388,18 @@ final class ChromeLayout {
             throw AccessibilityFailure("Could not encode window frame.")
         }
         if moveBeforeResize {
-            // New windows inherit another monitor's origin. Move onto the
-            // target before expanding so macOS does not clamp the new size.
+            // New windows inherit another window's frame, which may be taller
+            // or wider than the target. Shrink in place first so macOS does
+            // not clamp the move, then expand on the target so it does not
+            // clamp the new size to the original monitor.
+            let inherited = try rect(window)
+            if inherited.width > frame.width || inherited.height > frame.height {
+                var fitting = CGSize(width: min(inherited.width, frame.width), height: min(inherited.height, frame.height))
+                guard let fittingValue = AXValueCreate(.cgSize, &fitting) else {
+                    throw AccessibilityFailure("Could not encode window frame.")
+                }
+                try chrome.set(window, attribute: kAXSizeAttribute, value: fittingValue)
+            }
             try chrome.set(window, attribute: kAXPositionAttribute, value: positionValue)
             try chrome.set(window, attribute: kAXSizeAttribute, value: sizeValue)
         } else {

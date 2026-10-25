@@ -53,6 +53,7 @@ final class ChromeLayoutTests: XCTestCase {
         private(set) var presses = 0
         private(set) var performedActions: [String] = []
         private(set) var setAttributes: [String] = []
+        private(set) var setSizes: [CGSize] = []
         private var currentFrame = CGRect.zero
 
         func attribute(_ element: AXUIElement, _ name: String) throws -> CFTypeRef? {
@@ -140,6 +141,10 @@ final class ChromeLayoutTests: XCTestCase {
 
         func set(_ element: AXUIElement, attribute: String, value: CFTypeRef) throws {
             setAttributes.append(attribute)
+            var size = CGSize.zero
+            if attribute == kAXSizeAttribute, AXValueGetValue(value as! AXValue, .cgSize, &size) {
+                setSizes.append(size)
+            }
         }
 
         func advertisedActions(_ element: AXUIElement) throws -> [String] {
@@ -162,15 +167,34 @@ final class ChromeLayoutTests: XCTestCase {
 
     func testNewWindowMovesToTargetBeforeExpandingAndCompletesWithoutSleepWhenReady() throws {
         let chrome = FakeChrome()
+        let inherited = CGRect(x: 2560, y: 25, width: 800, height: 400)
         let expected = CGRect(x: 0, y: 25, width: 1920, height: 527)
         chrome.windowReads = [[], [chrome.window]]
-        chrome.frameReads = [expected]
+        chrome.frameReads = [inherited, expected]
         chrome.inspectedNodes = [pageNode(chrome.window)]
         let (layout, clock) = try makeLayout(chrome: chrome)
 
         try layout.prepare(frame: expected)
 
         XCTAssertEqual(chrome.setAttributes, [kAXPositionAttribute, kAXSizeAttribute])
+        XCTAssertEqual(chrome.setSizes, [expected.size])
+        XCTAssertEqual(clock.sleeps, [])
+    }
+
+    func testTallerInheritedWindowShrinksBeforeMovingOntoShorterTarget() throws {
+        let chrome = FakeChrome()
+        // Chrome sizes a new window from the last active one, here on a taller monitor.
+        let inherited = CGRect(x: 2560, y: 167, width: 1673, height: 1128)
+        let expected = CGRect(x: 24, y: 49, width: 1872, height: 1007)
+        chrome.windowReads = [[], [chrome.window]]
+        chrome.frameReads = [inherited, expected]
+        chrome.inspectedNodes = [pageNode(chrome.window)]
+        let (layout, clock) = try makeLayout(chrome: chrome)
+
+        try layout.prepare(frame: expected)
+
+        XCTAssertEqual(chrome.setAttributes, [kAXSizeAttribute, kAXPositionAttribute, kAXSizeAttribute])
+        XCTAssertEqual(chrome.setSizes, [CGSize(width: 1673, height: 1007), expected.size])
         XCTAssertEqual(clock.sleeps, [])
     }
 
@@ -227,8 +251,9 @@ final class ChromeLayoutTests: XCTestCase {
     func testNormalFramePollsSameOwnedWindowUntilGeometryMatches() throws {
         let chrome = FakeChrome()
         let expected = CGRect(x: 0, y: 25, width: 1920, height: 527)
+        let inherited = CGRect(x: 0, y: 0, width: 800, height: 400)
         chrome.windowReads = [[], [chrome.window]]
-        chrome.frameReads = [bounds.insetBy(dx: 20, dy: 20), expected]
+        chrome.frameReads = [inherited, bounds.insetBy(dx: 20, dy: 20), expected]
         chrome.inspectedNodes = [pageNode(chrome.window)]
         let (layout, clock) = try makeLayout(chrome: chrome)
 
