@@ -509,15 +509,28 @@ final class ChromeLayout {
                 addressField: addressField,
                 expected: self.website.absoluteString,
                 validateRecipient: {
-                    guard try self.chrome.windows().contains(where: { CFEqual($0, window) }),
-                          try self.target.validate().bounds.contains(self.rect(window)),
-                          let focus = try self.chrome.attribute(self.chrome.application, kAXFocusedUIElementAttribute),
-                          CFEqual(focus, addressField),
-                          let focusedWindow = try self.chrome.attribute(self.chrome.application, kAXFocusedWindowAttribute),
-                          CFEqual(focusedWindow, window),
-                          try self.chrome.attribute(self.chrome.application, kAXFrontmostAttribute) as? Bool == true,
-                          NSWorkspace.shared.frontmostApplication?.processIdentifier == self.chrome.pid else {
-                        throw AccessibilityFailure("The foreground website address field changed; submission stopped.")
+                    // Each check names its own failure so an interrupted
+                    // submission reports what actually moved.
+                    guard try self.chrome.windows().contains(where: { CFEqual($0, window) }) else {
+                        throw AccessibilityFailure("The setup window closed; submission stopped.")
+                    }
+                    let display = try self.target.validate()
+                    let windowFrame = try self.rect(window)
+                    guard display.bounds.contains(windowFrame) else {
+                        throw AccessibilityFailure("The setup window moved off \(self.monitor.name) to \(NSStringFromRect(windowFrame)); submission stopped.")
+                    }
+                    guard let focusedWindow = try self.chrome.attribute(self.chrome.application, kAXFocusedWindowAttribute),
+                          CFEqual(focusedWindow, window) else {
+                        throw AccessibilityFailure("The setup window is no longer Chrome's focused window; submission stopped.")
+                    }
+                    guard let focus = try self.chrome.attribute(self.chrome.application, kAXFocusedUIElementAttribute),
+                          CFEqual(focus, addressField) else {
+                        throw AccessibilityFailure("Keyboard focus left the setup window's address field; submission stopped.")
+                    }
+                    let foreground = NSWorkspace.shared.frontmostApplication
+                    guard try self.chrome.attribute(self.chrome.application, kAXFrontmostAttribute) as? Bool == true,
+                          foreground?.processIdentifier == self.chrome.pid else {
+                        throw AccessibilityFailure("Chrome is no longer the foreground app (foreground: \(foreground?.localizedName ?? "unknown")); submission stopped.")
                     }
                 },
                 logKeyResult: { event, result in
