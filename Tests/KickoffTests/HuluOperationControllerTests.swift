@@ -12,7 +12,7 @@ final class HuluOperationControllerTests: XCTestCase {
         init(failsAction: Bool = false) { self.failsAction = failsAction }
         func discoverPlayers() throws -> [PlayerState] {
             failsAction ? [PlayerState(identity: PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/test"),
-                                      windowIndex: 0, muted: false, audioDescription: "playing", hasAdMarker: true)] : []
+                                      windowIndex: 0, audio: .playing, hasAdMarker: true)] : []
         }
         func muteIfCurrentlyMarkedAd(
             _ player: PlayerIdentity,

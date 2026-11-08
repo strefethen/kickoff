@@ -30,6 +30,7 @@ struct ChromeWatchArea {
     let url: String
     let title: String
     let visibleAreaCountInWindow: Int
+    var unsupportedVisiblePeerWebArea: AXUIElement? = nil
 }
 
 struct ChromeTabAudioBinding {
@@ -46,11 +47,32 @@ struct ChromeTabAudioBinding {
     let peerTab: AXUIElement?
 }
 
+enum ChromeTabAudioAvailability {
+    case controls(ChromeTabAudioBinding)
+    case unavailable(ChromeAudioControlsUnavailable)
+}
+
+struct ChromeTabAudioPane {
+    let area: ChromeWatchArea
+    let tab: AXUIElement
+    let audio: ChromeTabAudioAvailability
+
+    var controlsGap: ChromeAudioControlsUnavailable? {
+        if case let .unavailable(gap) = audio { return gap }
+        return nil
+    }
+}
+
 /// Binds visible Chrome page areas to native tab-strip controls and owns the
 /// browser-level audio mutation/readback contract.
 final class ChromeTabAudioClient {
     private enum SplitSide: Hashable { case left, right }
     private enum AudioStatePending: Error { case missing, conflicting, changing }
+
+    private struct SplitPage {
+        let webArea: AXUIElement
+        let supportedArea: ChromeWatchArea?
+    }
 
     private struct TabCandidate {
         let element: AXUIElement
@@ -69,21 +91,14 @@ final class ChromeTabAudioClient {
         self.readbackTimeout = readbackTimeout
     }
 
-    func bind(_ watchAreas: [ChromeWatchArea]) throws -> [ChromeTabAudioBinding] {
-        var result: [ChromeTabAudioBinding] = []
-        var unavailable: ChromeAudioControlsUnavailable?
+    func bind(_ watchAreas: [ChromeWatchArea]) throws -> [ChromeTabAudioPane] {
+        var result: [ChromeTabAudioPane] = []
         var remaining = watchAreas
         while let first = remaining.first {
             let inWindow = remaining.filter { CFEqual($0.window, first.window) }
             remaining.removeAll { CFEqual($0.window, first.window) }
-            do {
-                result.append(contentsOf: try bind(inWindow, window: first.window))
-            } catch let error as ChromeAudioControlsUnavailable {
-                // Validate the other windows before accepting a recoverable gap.
-                unavailable = unavailable?.merging(error) ?? error
-            }
+            result.append(contentsOf: try bind(inWindow, window: first.window))
         }
-        if let unavailable { throw unavailable }
         return result
     }
 
@@ -171,24 +186,28 @@ final class ChromeTabAudioClient {
         throw AccessibilityFailure("AXPress returned \(pressResult.rawValue), but Chrome tab audio readback was not verified. No press was retried.", axError: pressResult)
     }
 
-    private func bind(_ areas: [ChromeWatchArea], window: AXUIElement) throws -> [ChromeTabAudioBinding] {
+    private func bind(_ areas: [ChromeWatchArea], window: AXUIElement) throws -> [ChromeTabAudioPane] {
         guard areas.count == 1 || areas.count == 2 else {
             throw AccessibilityFailure("Expected one normal supported player page or two split supported player pages in a Chrome window; found \(areas.count).")
         }
         let candidates = try tabCandidates(in: window)
+        var pages = areas.map { SplitPage(webArea: $0.webArea, supportedArea: $0) }
         if areas.count == 1 {
-            guard areas[0].visibleAreaCountInWindow == 1 else {
-                throw AccessibilityFailure("A single supported player page can be bound only when it is the window's single visible top-level web area.")
+            if areas[0].visibleAreaCountInWindow == 1 {
+                let selected = candidates.filter(\.selected)
+                guard selected.count == 1, let tab = selected.first else {
+                    throw AccessibilityFailure("One visible supported player page requires exactly one selected native Chrome tab.")
+                }
+                return [try pane(area: areas[0], tab: tab, side: nil, peerArea: nil, peerTab: nil)]
             }
-            let selected = candidates.filter(\.selected)
-            guard selected.count == 1, let tab = selected.first else {
-                throw AccessibilityFailure("One visible supported player page requires exactly one selected native Chrome tab.")
+            guard areas[0].visibleAreaCountInWindow == 2, let peer = areas[0].unsupportedVisiblePeerWebArea else {
+                throw AccessibilityFailure("A single supported player page can be bound only when it is the window's single visible top-level web area or shares a split view with one unsupported page.")
             }
-            return [try binding(area: areas[0], tab: tab, side: nil, peerArea: nil, peerTab: nil)]
-        }
-
-        guard areas.allSatisfy({ $0.visibleAreaCountInWindow == 2 }) else {
-            throw AccessibilityFailure("Two supported player split pages must be the window's only two visible top-level web areas.")
+            pages.append(SplitPage(webArea: peer, supportedArea: nil))
+        } else {
+            guard areas.allSatisfy({ $0.visibleAreaCountInWindow == 2 }) else {
+                throw AccessibilityFailure("Two supported player split pages must be the window's only two visible top-level web areas.")
+            }
         }
 
         let selected = candidates.filter(\.selected)
@@ -198,58 +217,56 @@ final class ChromeTabAudioClient {
         guard selected.count == 2,
               sided[.left]?.count == 1, let leftTab = sided[.left]?.first?.1,
               sided[.right]?.count == 1, let rightTab = sided[.right]?.first?.1 else {
-            throw AccessibilityFailure("Two visible supported player pages require exactly one Left view and one Right view native Chrome tab.")
+            throw AccessibilityFailure("Two visible split pages require exactly one Left view and one Right view native Chrome tab.")
         }
-        let framed = try areas.map { area in (area, try frame(of: area.webArea)) }
-        guard let leftArea = framed.min(by: { $0.1.midX < $1.1.midX }),
-              let rightArea = framed.max(by: { $0.1.midX < $1.1.midX }),
-              !CFEqual(leftArea.0.webArea, rightArea.0.webArea),
-              leftArea.1.maxX <= rightArea.1.minX,
-              leftArea.1.maxY > rightArea.1.minY,
-              rightArea.1.maxY > leftArea.1.minY else {
-            throw AccessibilityFailure("Split supported player web areas do not expose unique non-overlapping horizontal geometry.")
+        let framed = try pages.map { page in (page, try frame(of: page.webArea)) }
+        guard let leftPage = framed.min(by: { $0.1.midX < $1.1.midX }),
+              let rightPage = framed.max(by: { $0.1.midX < $1.1.midX }),
+              !CFEqual(leftPage.0.webArea, rightPage.0.webArea),
+              leftPage.1.maxX <= rightPage.1.minX,
+              leftPage.1.maxY > rightPage.1.minY,
+              rightPage.1.maxY > leftPage.1.minY else {
+            throw AccessibilityFailure("Split web areas do not expose unique non-overlapping horizontal geometry.")
         }
-        let pairs: [(ChromeWatchArea, TabCandidate, SplitSide, AXUIElement, AXUIElement)] = [
-            (leftArea.0, leftTab, .left, rightArea.0.webArea, rightTab.element),
-            (rightArea.0, rightTab, .right, leftArea.0.webArea, leftTab.element),
+        let sides: [(SplitPage, TabCandidate, SplitSide, SplitPage, TabCandidate)] = [
+            (leftPage.0, leftTab, .left, rightPage.0, rightTab),
+            (rightPage.0, rightTab, .right, leftPage.0, leftTab),
         ]
-        var result: [ChromeTabAudioBinding] = []
-        var unavailable: ChromeAudioControlsUnavailable?
-        for (area, tab, side, peerArea, peerTab) in pairs {
-            do {
-                result.append(try binding(area: area, tab: tab, side: side, peerArea: peerArea, peerTab: peerTab))
-            } catch let error as ChromeAudioControlsUnavailable {
-                // A missing control must not hide a terminal failure on its peer.
-                unavailable = unavailable?.merging(error) ?? error
-            }
+        return try sides.compactMap { page, tab, side, peerPage, peerTab in
+            guard let area = page.supportedArea else { return nil }
+            return try pane(area: area, tab: tab, side: side, peerArea: peerPage.webArea, peerTab: peerTab.element)
         }
-        if let unavailable { throw unavailable }
-        return result
     }
 
-    private func binding(
+    private func pane(
         area: ChromeWatchArea,
         tab: TabCandidate,
         side: SplitSide?,
         peerArea: AXUIElement?,
         peerTab: AXUIElement?
-    ) throws -> ChromeTabAudioBinding {
+    ) throws -> ChromeTabAudioPane {
         guard titleMatches(tab.title, webAreaTitle: area.title) else {
             throw AccessibilityFailure("Chrome native tab title does not match its candidate supported player web area title.")
         }
-        // Conflicting state remains terminal even if the button is also absent.
+        func gap(_ description: String) -> ChromeTabAudioPane {
+            ChromeTabAudioPane(
+                area: area,
+                tab: tab.element,
+                audio: .unavailable(ChromeAudioControlsUnavailable(description: description, watchAreas: [area]))
+            )
+        }
         let state: ChromeTabAudioState
         do {
             state = try audioState(title: tab.title, description: tab.nodeDescription)
         } catch AudioStatePending.missing {
-            throw ChromeAudioControlsUnavailable(description: "Chrome is not reporting tab audio state.", watchAreas: [area])
+            return gap("Chrome is not reporting tab audio state.")
         } catch is AudioStatePending {
             throw AccessibilityFailure("Chrome native tab has conflicting Audio playing/Audio muted state.")
         }
         guard let button = tab.button else {
-            throw ChromeAudioControlsUnavailable(description: "Chrome is not exposing a native tab audio button.", watchAreas: [area])
+            return gap("Chrome is not exposing a native tab audio button.")
         }
-        return ChromeTabAudioBinding(
+        let binding = ChromeTabAudioBinding(
             window: area.window,
             webArea: area.webArea,
             url: area.url,
@@ -262,6 +279,7 @@ final class ChromeTabAudioClient {
             peerWebArea: peerArea,
             peerTab: peerTab
         )
+        return ChromeTabAudioPane(area: area, tab: tab.element, audio: .controls(binding))
     }
 
     private func tabCandidates(in window: AXUIElement) throws -> [TabCandidate] {

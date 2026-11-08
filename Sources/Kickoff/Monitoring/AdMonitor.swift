@@ -218,10 +218,11 @@ final class AdMonitor {
                 return
             }
             let expected = players.map(\.identity)
+            let monitoredPlayers = players.filter(\.hasAudioControls).count
             let restoreCandidates = context.policy.restoreCandidates(afterCompleteScan: players)
             var newlyMuted = 0
             var newlyUnmuted = 0
-            for player in players where player.hasAdMarker && !player.muted {
+            for player in players where player.hasAdMarker && player.audio == .playing {
                 try token.check()
                 let outcome = try context.player.muteIfCurrentlyMarkedAd(
                     player.identity,
@@ -250,7 +251,7 @@ final class AdMonitor {
                 self?.finishPass(
                     run: run,
                     token: token,
-                    result: .success(.complete(players: players.count, newlyMuted: newlyMuted, newlyUnmuted: newlyUnmuted))
+                    result: .success(.complete(players: monitoredPlayers, newlyMuted: newlyMuted, newlyUnmuted: newlyUnmuted))
                 )
             }
         } catch {

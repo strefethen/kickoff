@@ -7,8 +7,7 @@ final class AdAudioPolicyTests: XCTestCase {
         PlayerState(
             identity: identity,
             windowIndex: 0,
-            muted: muted,
-            audioDescription: muted ? "muted" : "playing",
+            audio: muted ? .muted : .playing,
             hasAdMarker: marked
         )
     }
@@ -67,6 +66,25 @@ final class AdAudioPolicyTests: XCTestCase {
             XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [absent]).isEmpty)
             XCTAssertEqual(policy.restoreCandidates(afterCompleteScan: [absent]), [identity])
         }
+    }
+
+    func testLeasedPaneWithoutControlsKeepsLeaseAndEarnsNoAbsenceCredit() {
+        let identity = PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/owned")
+        let policy = AdAudioPolicy()
+        policy.claimAfterVerifiedMute(identity)
+        let absent = state(identity, marked: false, muted: true)
+        let silent = PlayerState(identity: identity, windowIndex: 0, audio: .noControls(reason: "missing"), hasAdMarker: false)
+
+        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [silent]).isEmpty)
+        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [silent]).isEmpty)
+        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [silent]).isEmpty)
+        XCTAssertTrue(policy.owns(identity))
+
+        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [absent]).isEmpty)
+        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [silent]).isEmpty)
+        XCTAssertTrue(policy.owns(identity))
+        XCTAssertTrue(policy.restoreCandidates(afterCompleteScan: [absent]).isEmpty)
+        XCTAssertEqual(policy.restoreCandidates(afterCompleteScan: [absent]), [identity])
     }
 
     func testDifferentTabTokenCannotInheritAnOwnedMute() {

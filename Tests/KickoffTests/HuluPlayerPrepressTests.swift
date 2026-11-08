@@ -423,19 +423,23 @@ final class HuluPlayerPrepressTests: XCTestCase {
         }
     }
 
-    func testMissingControlsNeverReturnPartialBindings() throws {
+    func testMissingControlsOnOnePaneStillReturnsBothWithStableIdentity() throws {
         for split in [false, true] {
             let chrome = FakeChrome()
             chrome.pageCount = 2
             chrome.split = split
             chrome.missingAudioButtons = [0]
             let client = ChromePlayerClient(chrome: chrome)
-            XCTAssertThrowsError(try client.discoverPlayers()) { error in
-                XCTAssertTrue(error is ChromeAudioControlsUnavailable)
-            }
+            let partial = try client.discoverPlayers()
+            XCTAssertEqual(partial.count, 2)
+            XCTAssertFalse(partial[0].hasAudioControls)
+            XCTAssertEqual(partial[1].audio, .playing)
             XCTAssertEqual(chrome.presses, 0)
             chrome.missingAudioButtons = []
-            XCTAssertEqual(try client.discoverPlayers().count, 2)
+            let restored = try client.discoverPlayers()
+            XCTAssertEqual(restored.count, 2)
+            XCTAssertEqual(restored.map(\.identity), partial.map(\.identity))
+            XCTAssertEqual(restored[0].audio, .playing)
         }
     }
 

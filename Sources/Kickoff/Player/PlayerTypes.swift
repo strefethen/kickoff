@@ -5,19 +5,38 @@ struct PlayerIdentity: Hashable {
     let url: String
 }
 
+enum PlayerAudio: Equatable {
+    case playing
+    case muted
+    case noControls(reason: String)
+
+    var description: String {
+        switch self {
+        case .playing: return ChromeTabAudioState.playing.description
+        case .muted: return ChromeTabAudioState.muted.description
+        case let .noControls(reason): return "No Chrome tab audio controls: \(reason)"
+        }
+    }
+}
+
 struct PlayerState: Equatable {
     let identity: PlayerIdentity
     let windowIndex: Int
-    let muted: Bool
-    let audioDescription: String
+    let audio: PlayerAudio
     let hasAdMarker: Bool
+
+    var hasAudioControls: Bool {
+        if case .noControls = audio { return false }
+        return true
+    }
 
     var summary: [String: Any] {
         [
             "windowIndex": windowIndex,
             "url": identity.url,
-            "muted": muted,
-            "audioDescription": audioDescription,
+            "muted": hasAudioControls ? (audio == .muted) as Any : NSNull(),
+            "tabAudioControls": hasAudioControls ? "available" : "unavailable",
+            "audioDescription": audio.description,
             "adState": hasAdMarker ? "marked-ad" : "unknown",
         ]
     }

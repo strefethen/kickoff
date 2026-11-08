@@ -24,12 +24,16 @@ final class AdAudioPolicy {
         for player in players {
             let token = player.identity.token
             guard var lease = leases[token] else { continue }
-            if !player.muted {
+            switch player.audio {
+            case .playing:
                 leases.removeValue(forKey: token)
-            } else if player.hasAdMarker {
+            case .noControls:
                 lease.consecutiveCompleteAbsenceScans = 0
                 leases[token] = lease
-            } else {
+            case .muted where player.hasAdMarker:
+                lease.consecutiveCompleteAbsenceScans = 0
+                leases[token] = lease
+            case .muted:
                 lease.consecutiveCompleteAbsenceScans += 1
                 leases[token] = lease
                 if lease.consecutiveCompleteAbsenceScans >= 2 {

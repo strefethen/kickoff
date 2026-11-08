@@ -87,8 +87,7 @@ final class AdMonitorTests: XCTestCase {
         PlayerState(
             identity: PlayerIdentity(token: UUID(), url: url),
             windowIndex: 0,
-            muted: muted,
-            audioDescription: muted ? "Chrome tab audio muted" : "Chrome tab audio playing",
+            audio: muted ? .muted : .playing,
             hasAdMarker: marked
         )
     }
@@ -199,8 +198,8 @@ final class AdMonitorTests: XCTestCase {
 
     func testOwnedMuteRestoresAfterTwoCompleteAbsenceScans() {
         let identity = PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/owned")
-        let ad = PlayerState(identity: identity, windowIndex: 0, muted: false, audioDescription: "playing", hasAdMarker: true)
-        let absentMuted = PlayerState(identity: identity, windowIndex: 0, muted: true, audioDescription: "muted", hasAdMarker: false)
+        let ad = PlayerState(identity: identity, windowIndex: 0, audio: .playing, hasAdMarker: true)
+        let absentMuted = PlayerState(identity: identity, windowIndex: 0, audio: .muted, hasAdMarker: false)
         let fake = FakePlayerClient(players: [ad])
         fake.discoveries = [[ad], [absentMuted], [absentMuted]]
         let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01) { fake }
@@ -246,8 +245,8 @@ final class AdMonitorTests: XCTestCase {
 
     func testStopRestartDiscardsOwnedMuteWithoutCleanupUnmute() {
         let identity = PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/owned")
-        let ad = PlayerState(identity: identity, windowIndex: 0, muted: false, audioDescription: "playing", hasAdMarker: true)
-        let absentMuted = PlayerState(identity: identity, windowIndex: 0, muted: true, audioDescription: "muted", hasAdMarker: false)
+        let ad = PlayerState(identity: identity, windowIndex: 0, audio: .playing, hasAdMarker: true)
+        let absentMuted = PlayerState(identity: identity, windowIndex: 0, audio: .muted, hasAdMarker: false)
         let first = FakePlayerClient(players: [ad])
         let second = FakePlayerClient(players: [absentMuted])
         let lock = NSLock()
@@ -280,8 +279,7 @@ final class AdMonitorTests: XCTestCase {
 
     func testProcessLossRecreatesClientWithoutTransferringOwnedMute() {
         let ad = player("https://www.hulu.com/watch/owned", marked: true)
-        let absent = PlayerState(identity: ad.identity, windowIndex: 0, muted: true,
-                                 audioDescription: "muted", hasAdMarker: false)
+        let absent = PlayerState(identity: ad.identity, windowIndex: 0, audio: .muted, hasAdMarker: false)
         let first = FakePlayerClient(players: [ad])
         first.discoveryErrors[1] = ChromeProcessUnavailable(description: "Chrome exited")
         // Reusing even the same identity must not transfer ownership to a new process.
@@ -302,8 +300,7 @@ final class AdMonitorTests: XCTestCase {
 
     func testReadFailureRetainsOwnershipButRequiresTwoFreshCompleteScans() {
         let ad = player("https://www.hulu.com/watch/owned", marked: true)
-        let absent = PlayerState(identity: ad.identity, windowIndex: 0, muted: true,
-                                 audioDescription: "muted", hasAdMarker: false)
+        let absent = PlayerState(identity: ad.identity, windowIndex: 0, audio: .muted, hasAdMarker: false)
         let fake = FakePlayerClient(players: [ad])
         fake.discoveries = [[ad], [absent], [absent], [absent], [absent]]
         fake.discoveryErrors[2] = AccessibilityFailure("incomplete read")
@@ -607,8 +604,7 @@ final class AdMonitorTests: XCTestCase {
 
     func testOwnedMuteSurvivesGapButNeedsTwoFreshCompleteAbsenceScans() {
         let ad = player("https://www.hulu.com/watch/owned", marked: true)
-        let absent = PlayerState(identity: ad.identity, windowIndex: 0, muted: true,
-                                 audioDescription: "muted", hasAdMarker: false)
+        let absent = PlayerState(identity: ad.identity, windowIndex: 0, audio: .muted, hasAdMarker: false)
         let fake = FakePlayerClient(players: [ad])
         fake.discoveries = [[ad], [absent], [absent], [absent], [absent]]
         fake.discoveryErrors[2] = ChromeAudioControlsUnavailable(description: "missing")
@@ -617,6 +613,42 @@ final class AdMonitorTests: XCTestCase {
         monitor.onStatusChange = { status in
             if case .waitingForAudioControls = status { XCTAssertTrue(fake.restoreCalls().isEmpty) }
             if status == .monitoring(players: 1, newlyMuted: 0, newlyUnmuted: 1) {
+                XCTAssertEqual(fake.discoveryCount, 5)
+                restored.fulfill()
+            }
+        }
+        monitor.start()
+        wait(for: [restored], timeout: 2)
+        monitor.stopAndDrain()
+        XCTAssertEqual(fake.restoreCalls(), [ad.identity.token])
+    }
+
+    func testPanesWithoutControlsAreSkippedWhileOthersKeepMonitoring() {
+        let audible = player("https://www.hulu.com/watch/audible", marked: true)
+        let silentAd = PlayerState(
+            identity: PlayerIdentity(token: UUID(), url: "https://www.hulu.com/watch/silent"),
+            windowIndex: 1,
+            audio: .noControls(reason: "missing"),
+            hasAdMarker: true
+        )
+        let fake = FakePlayerClient(players: [audible, silentAd])
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 60) { fake }
+        awaitStatus({ $0 == .monitoring(players: 1, newlyMuted: 1, newlyUnmuted: 0) }, monitor: monitor) { monitor.start() }
+        XCTAssertEqual(fake.calls(), [audible.identity.token])
+        XCTAssertTrue(fake.restoreCalls().isEmpty)
+    }
+
+    func testLeasedPaneLosingControlsNeedsTwoFreshScansAfterControlsReturn() {
+        let ad = player("https://www.hulu.com/watch/owned", marked: true)
+        let absent = PlayerState(identity: ad.identity, windowIndex: 0, audio: .muted, hasAdMarker: false)
+        let silent = PlayerState(identity: ad.identity, windowIndex: 0, audio: .noControls(reason: "missing"), hasAdMarker: false)
+        let peer = player("https://www.hulu.com/watch/peer", marked: false)
+        let fake = FakePlayerClient(players: [ad, peer])
+        fake.discoveries = [[ad, peer], [absent, peer], [silent, peer], [absent, peer], [absent, peer]]
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01) { fake }
+        let restored = expectation(description: "restored after fresh evidence")
+        monitor.onStatusChange = { status in
+            if status == .monitoring(players: 2, newlyMuted: 0, newlyUnmuted: 1) {
                 XCTAssertEqual(fake.discoveryCount, 5)
                 restored.fulfill()
             }
