@@ -6,6 +6,20 @@ protocol ChromeLayoutAccessing: ChromeAccessibilityAccessing, ChromeAddressField
 
 extension ChromeAccessibilityClient: ChromeLayoutAccessing {}
 
+enum ChromeViewClass {
+    static let omnibox = "OmniboxViewViews"
+    static let splitButton = "SplitTabsToolbarButton"
+    static let splitResizeHandle = "MultiContentsResizeHandle"
+    static let tab = "Tab"
+}
+
+enum ChromeMenu {
+    static let fileMenuIndex = 2
+    static let commandIdentifier = "commandDispatch:"
+    static let newWindowKey = "N"
+    static let commandOnlyModifiers = "0"
+}
+
 /// Native AX setup. Each run owns only the new Chrome window it creates.
 final class ChromeLayout {
     let chrome: ChromeLayoutAccessing
@@ -15,6 +29,7 @@ final class ChromeLayout {
     private let now: () -> Date
     private let sleep: (TimeInterval) -> Void
     private let windowStateTimeout: TimeInterval
+    private let setupLog: SetupLogging?
     private var ownedWindow: AXUIElement?
     private let layoutTerminals: Set<String> = [
         "AXWebArea", kAXTextFieldRole, kAXButtonRole, kAXRadioButtonRole,
@@ -28,7 +43,8 @@ final class ChromeLayout {
         chrome: ChromeLayoutAccessing? = nil,
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (TimeInterval) -> Void = Thread.sleep,
-        windowStateTimeout: TimeInterval = 8
+        windowStateTimeout: TimeInterval = 8,
+        setupLog: SetupLogging? = nil
     ) throws {
         self.target = target
         self.monitor = target.monitor
@@ -37,6 +53,7 @@ final class ChromeLayout {
         self.now = now
         self.sleep = sleep
         self.windowStateTimeout = windowStateTimeout
+        self.setupLog = setupLog
     }
 
     func rect(_ element: AXUIElement) throws -> CGRect {
@@ -56,10 +73,11 @@ final class ChromeLayout {
     }
 
     func log(_ value: [String: Any]) {
-        if let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) {
-            print(String(decoding: data, as: UTF8.self))
-            fflush(stdout)
-        }
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) else { return }
+        let line = String(decoding: data, as: UTF8.self)
+        print(line)
+        fflush(stdout)
+        setupLog?.record(line)
     }
 
     func currentTargetWindow() throws -> ChromeWindowSnapshot {
@@ -102,7 +120,7 @@ final class ChromeLayout {
                 let requestedFrame = frame ?? target.monitor.visibleBounds.insetBy(dx: 24, dy: 24)
                 try applyNormalFrame(requestedFrame, to: window, moveBeforeResize: true)
                 log(["event": "window-on-monitor", "chromePID": chrome.pid, "display": monitor.name])
-                return try currentTargetWindow()
+                return try waitForWindow(seconds: windowStateTimeout) { _ in true }
             }
             sleep(0.2)
         } while now() < deadline
@@ -112,7 +130,7 @@ final class ChromeLayout {
     func browseActiveWebsite(expectedPages: Int) throws {
         let original = try currentTargetWindow()
         let fields = original.nodes.filter {
-            $0.role == kAXTextFieldRole && $0.nodeDescription == "Address and search bar"
+            $0.role == kAXTextFieldRole && $0.domClassList.contains(ChromeViewClass.omnibox)
         }
         guard fields.count == 1, let field = fields.first else {
             throw AccessibilityFailure("Chrome's address bar is ambiguous.")
@@ -139,14 +157,13 @@ final class ChromeLayout {
         guard pageURLs(window).count == 1 else {
             throw AccessibilityFailure("Split creation requires a single page.")
         }
-        let buttons = window.nodes.filter { $0.role == kAXButtonRole && $0.title == "Open tab in split view" }
+        let buttons = window.nodes.filter { $0.role == kAXButtonRole && $0.domClassList.contains(ChromeViewClass.splitButton) }
         guard buttons.count == 1, let button = buttons.first else {
-            throw AccessibilityFailure("Chrome's split-view button is unavailable.")
+            throw AccessibilityFailure("Chrome's split-view button is unavailable. Update Google Chrome to a version with split view.")
         }
         try performAction(kAXPressAction, on: button.element)
         _ = try waitForWindow(seconds: 8) {
-            self.hasSplit($0) && self.pageURLs($0).count == 2 &&
-                $0.nodes.contains { $0.title == "Arrange split view - right view active" }
+            self.hasSplit($0) && self.pageURLs($0).count == 2
         }
         log(["event": "split-verified", "chromePID": chrome.pid])
     }
@@ -281,6 +298,35 @@ final class ChromeLayout {
         throw AccessibilityFailure("Chrome did not make the raised setup window main and focused.")
     }
 
+    func closeOwnedWindow() throws -> Bool {
+        guard let window = ownedWindow else { return false }
+        let listedDeadline = now().addingTimeInterval(min(windowStateTimeout, 3))
+        while try !chrome.windows().contains(where: { CFEqual($0, window) }) {
+            guard now() < listedDeadline else {
+                throw AccessibilityFailure("Chrome stopped listing the setup window, so Kickoff could not confirm it closed. Check \(monitor.name) for a leftover window.")
+            }
+            sleep(0.2)
+        }
+        guard let rawButton = try chrome.attribute(window, kAXCloseButtonAttribute),
+              CFGetTypeID(rawButton) == AXUIElementGetTypeID() else {
+            throw AccessibilityFailure("Chrome's close button for the setup window is unavailable.")
+        }
+        let result = chrome.performOnce(kAXPressAction, on: rawButton as! AXUIElement)
+        log(["event": "close-owned-window", "result": result.rawValue])
+        guard result == .success else {
+            throw AccessibilityFailure("Closing the setup window failed with AX error \(result.rawValue).", axError: result)
+        }
+        let deadline = now().addingTimeInterval(min(windowStateTimeout, 3))
+        repeat {
+            if try !chrome.windows().contains(where: { CFEqual($0, window) }) {
+                ownedWindow = nil
+                return true
+            }
+            sleep(0.2)
+        } while now() < deadline
+        throw AccessibilityFailure("Chrome kept the setup window open, possibly because a page asked to confirm leaving.")
+    }
+
     private func waitForOwnedSplitWindow(frame: CGRect?) throws -> ChromeWindowSnapshot {
         guard let window = ownedWindow else {
             throw AccessibilityFailure("Chrome split verification requires the window created by this setup session.")
@@ -376,68 +422,119 @@ final class ChromeLayout {
         throw AccessibilityFailure("Chrome did not finish the setup step. No action was repeated.")
     }
 
+    private enum FrameWriteOrder {
+        case moveThenResize
+        case resizeThenMove
+    }
+
+    private struct NormalFrameObservation {
+        let frame: CGRect?
+        let isFullScreen: Bool?
+        let isListed: Bool
+
+        func matches(_ expected: CGRect, on display: CGRect) -> Bool {
+            guard isListed, isFullScreen == false, let frame else { return false }
+            return display.contains(frame) && Self.matchesFrame(frame, expected)
+        }
+
+        var summary: String {
+            guard isListed else { return "the window was no longer listed" }
+            let place = frame.map(NSStringFromRect) ?? "an unreadable frame"
+            return isFullScreen == true ? "it was full screen at \(place)" : "it was at \(place)"
+        }
+
+        static func matchesFrame(_ actual: CGRect, _ expected: CGRect) -> Bool {
+            abs(actual.minX - expected.minX) <= 1 && abs(actual.minY - expected.minY) <= 1 &&
+                abs(actual.width - expected.width) <= 1 && abs(actual.height - expected.height) <= 1
+        }
+    }
+
+    private static let frameSettleInterval: TimeInterval = 0.2
+
     private func applyNormalFrame(_ frame: CGRect, to window: AXUIElement, moveBeforeResize: Bool = false) throws {
         let display = try target.validate()
         guard display.bounds.contains(frame) else {
             throw AccessibilityFailure("The requested window frame is outside \(monitor.name).")
         }
-        var position = frame.origin
-        var size = frame.size
-        guard let positionValue = AXValueCreate(.cgPoint, &position),
-              let sizeValue = AXValueCreate(.cgSize, &size) else {
-            throw AccessibilityFailure("Could not encode window frame.")
-        }
-        if moveBeforeResize {
-            // New windows inherit another window's frame, which may be taller
-            // or wider than the target. Shrink in place first so macOS does
-            // not clamp the move, then expand on the target so it does not
-            // clamp the new size to the original monitor.
-            let inherited = try rect(window)
-            if inherited.width > frame.width || inherited.height > frame.height {
-                var fitting = CGSize(width: min(inherited.width, frame.width), height: min(inherited.height, frame.height))
-                guard let fittingValue = AXValueCreate(.cgSize, &fitting) else {
-                    throw AccessibilityFailure("Could not encode window frame.")
-                }
-                try chrome.set(window, attribute: kAXSizeAttribute, value: fittingValue)
-            }
-            try chrome.set(window, attribute: kAXPositionAttribute, value: positionValue)
-            try chrome.set(window, attribute: kAXSizeAttribute, value: sizeValue)
-        } else {
-            // Shrink an already placed window before moving it down, so its
-            // old height does not cause macOS to clamp the lower-row origin.
-            try chrome.set(window, attribute: kAXSizeAttribute, value: sizeValue)
-            try chrome.set(window, attribute: kAXPositionAttribute, value: positionValue)
-        }
-        try waitForOwnedWindowNormalFrame(window, expected: frame)
-    }
-
-    private func waitForOwnedWindowNormalFrame(_ window: AXUIElement, expected: CGRect) throws {
-        let deadline = now().addingTimeInterval(min(windowStateTimeout, 3))
+        let order: FrameWriteOrder = moveBeforeResize ? .moveThenResize : .resizeThenMove
+        let deadline = now().addingTimeInterval(windowStateTimeout)
+        var attempts = 0
+        var observed = try observeNormalFrame(window)
         repeat {
-            let display = try target.validate()
-            let windows = try chrome.windows()
-            if windows.contains(where: { CFEqual($0, window) }) {
+            if observed.isListed {
                 do {
-                    guard let isFullScreen = try chrome.attribute(window, "AXFullScreen") as? Bool else {
-                        throw AccessibilityFailure("Chrome's full-screen state is unavailable.")
-                    }
-                    let actualFrame = try rect(window)
-                    if !isFullScreen, display.bounds.contains(actualFrame), matchesFrame(actualFrame, expected) { return }
+                    try writeFrame(frame, to: window, current: observed.frame, order: order)
                 } catch let failure as AccessibilityFailure where failure.axError == .invalidUIElement {
-                    // The same owning window is checked again after a short
-                    // bounded delay if Chrome transiently invalidates it.
+                    log(["event": "frame-write-invalid-element", "attempt": attempts + 1])
                 }
+                attempts += 1
             }
-            sleep(0.2)
+            var previousFrame: CGRect?
+            var reads = 0
+            repeat {
+                if reads > 0 { sleep(Self.frameSettleInterval) }
+                reads += 1
+                observed = try observeNormalFrame(window)
+                if observed.matches(frame, on: try target.validate().bounds) {
+                    log(["event": "frame-verified", "frame": NSStringFromRect(frame), "attempts": attempts])
+                    return
+                }
+                if let current = observed.frame, current == previousFrame { break }
+                previousFrame = observed.frame
+            } while now() < deadline
+            log(["event": "frame-mismatch", "expected": NSStringFromRect(frame), "observed": observed.summary, "attempt": attempts])
         } while now() < deadline
         throw AccessibilityFailure(
-            "Chrome did not place the setup window at \(NSStringFromRect(expected)) in normal mode."
+            "Chrome would not keep the setup window at \(NSStringFromRect(frame)) on \(monitor.name); after \(attempts) attempts \(observed.summary)."
         )
     }
 
+    private func writeFrame(_ frame: CGRect, to window: AXUIElement, current: CGRect?, order: FrameWriteOrder) throws {
+        switch order {
+        case .moveThenResize:
+            if let current, current.width > frame.width || current.height > frame.height {
+                try setSize(CGSize(width: min(current.width, frame.width), height: min(current.height, frame.height)), of: window)
+            }
+            try setPosition(frame.origin, of: window)
+            try setSize(frame.size, of: window)
+        case .resizeThenMove:
+            try setSize(frame.size, of: window)
+            try setPosition(frame.origin, of: window)
+        }
+    }
+
+    private func setSize(_ size: CGSize, of window: AXUIElement) throws {
+        var size = size
+        guard let value = AXValueCreate(.cgSize, &size) else {
+            throw AccessibilityFailure("Could not encode window frame.")
+        }
+        try chrome.set(window, attribute: kAXSizeAttribute, value: value)
+    }
+
+    private func setPosition(_ origin: CGPoint, of window: AXUIElement) throws {
+        var origin = origin
+        guard let value = AXValueCreate(.cgPoint, &origin) else {
+            throw AccessibilityFailure("Could not encode window frame.")
+        }
+        try chrome.set(window, attribute: kAXPositionAttribute, value: value)
+    }
+
+    private func observeNormalFrame(_ window: AXUIElement) throws -> NormalFrameObservation {
+        guard try chrome.windows().contains(where: { CFEqual($0, window) }) else {
+            return NormalFrameObservation(frame: nil, isFullScreen: nil, isListed: false)
+        }
+        do {
+            guard let isFullScreen = try chrome.attribute(window, "AXFullScreen") as? Bool else {
+                throw AccessibilityFailure("Chrome's full-screen state is unavailable.")
+            }
+            return NormalFrameObservation(frame: try rect(window), isFullScreen: isFullScreen, isListed: true)
+        } catch let failure as AccessibilityFailure where failure.axError == .invalidUIElement {
+            return NormalFrameObservation(frame: nil, isFullScreen: nil, isListed: true)
+        }
+    }
+
     private func matchesFrame(_ actual: CGRect, _ expected: CGRect) -> Bool {
-        abs(actual.minX - expected.minX) <= 1 && abs(actual.minY - expected.minY) <= 1 &&
-            abs(actual.width - expected.width) <= 1 && abs(actual.height - expected.height) <= 1
+        NormalFrameObservation.matchesFrame(actual, expected)
     }
 
     private func children(_ element: AXUIElement) throws -> [AXUIElement] {
@@ -447,13 +544,10 @@ final class ChromeLayout {
         return children
     }
 
-    private func uniqueChild(_ parent: AXUIElement, role: String, title: String? = nil) throws -> AXUIElement {
-        let matches = try children(parent).filter { child in
-            guard try chrome.text(child, kAXRoleAttribute) == role else { return false }
-            return try title == nil || chrome.text(child, kAXTitleAttribute) == title
-        }
+    private func uniqueChild(_ parent: AXUIElement, role: String) throws -> AXUIElement {
+        let matches = try children(parent).filter { try chrome.text($0, kAXRoleAttribute) == role }
         guard matches.count == 1, let match = matches.first else {
-            throw AccessibilityFailure("Chrome menu item \(title ?? role) is unavailable or ambiguous.")
+            throw AccessibilityFailure("Chrome's \(role) is unavailable or ambiguous.")
         }
         return match
     }
@@ -463,9 +557,21 @@ final class ChromeLayout {
               CFGetTypeID(rawMenu) == AXUIElementGetTypeID() else {
             throw AccessibilityFailure("Chrome's menu bar is unavailable.")
         }
-        let file = try uniqueChild(rawMenu as! AXUIElement, role: kAXMenuBarItemRole, title: "File")
-        let menu = try uniqueChild(file, role: kAXMenuRole)
-        return try uniqueChild(menu, role: kAXMenuItemRole, title: "New Window")
+        let menuBarItems = try children(rawMenu as! AXUIElement)
+        guard menuBarItems.count > ChromeMenu.fileMenuIndex else {
+            throw AccessibilityFailure("Chrome's File menu is unavailable.")
+        }
+        let menu = try uniqueChild(menuBarItems[ChromeMenu.fileMenuIndex], role: kAXMenuRole)
+        let matches = try children(menu).filter { item in
+            try chrome.text(item, kAXRoleAttribute) == kAXMenuItemRole &&
+                chrome.text(item, "AXIdentifier") == ChromeMenu.commandIdentifier &&
+                chrome.text(item, kAXMenuItemCmdCharAttribute) == ChromeMenu.newWindowKey &&
+                chrome.text(item, kAXMenuItemCmdModifiersAttribute) == ChromeMenu.commandOnlyModifiers
+        }
+        guard matches.count == 1, let match = matches.first else {
+            throw AccessibilityFailure("Chrome's New Window command (⌘N) is unavailable or ambiguous.")
+        }
+        return match
     }
 
     private func readyNewWindowCommand() throws -> ([AXUIElement], AXUIElement) {
@@ -554,13 +660,14 @@ final class ChromeLayout {
     }
 
     private func hasSplit(_ window: ChromeWindowSnapshot) -> Bool {
-        let tabs = window.nodes.filter {
-            $0.role == kAXRadioButtonRole &&
-                ($0.nodeDescription.contains(" - Left view") || $0.nodeDescription.contains(" - Right view"))
+        let splitTabs = window.nodes.filter {
+            $0.role == kAXRadioButtonRole && $0.domClassList.contains(ChromeViewClass.tab) && $0.value == "1"
         }
-        return tabs.count == 2 && window.nodes.filter {
-            $0.nodeDescription.hasPrefix("Split View Resize Handle")
-        }.count == 1
+        let arrangeButtons = window.nodes.filter {
+            $0.role == kAXPopUpButtonRole && $0.domClassList.contains(ChromeViewClass.splitButton)
+        }
+        let handles = window.nodes.filter { $0.domClassList.contains(ChromeViewClass.splitResizeHandle) }
+        return splitTabs.count == 2 && arrangeButtons.count == 1 && handles.count == 1
     }
 
     private func snapshot(_ window: AXUIElement) throws -> ChromeWindowSnapshot {
@@ -587,6 +694,9 @@ final class ChromeLayout {
     private func step(_ name: String, action: () throws -> Void) throws {
         log(["event": "setup-step", "step": name])
         do { try action() }
-        catch { throw AccessibilityFailure("\(name): \(error)") }
+        catch {
+            log(["event": "setup-step-failed", "step": name, "error": String(describing: error)])
+            throw AccessibilityFailure("\(name): \(error)")
+        }
     }
 }

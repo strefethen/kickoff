@@ -11,6 +11,7 @@ final class ChromeAddressEntryTests: XCTestCase {
         var selectedText: String?
         var selectedRange: CFRange?
         var events: [String] = []
+        var rewrittenValues: [String] = []
 
         init(valueAfterSet: String, selectedText: String? = nil, selectedRange: CFRange? = nil) {
             self.valueAfterSet = valueAfterSet
@@ -34,7 +35,7 @@ final class ChromeAddressEntryTests: XCTestCase {
         func set(_ element: AXUIElement, attribute: String, value: CFTypeRef) throws {
             XCTAssertEqual(attribute, kAXValueAttribute)
             events.append("set-value")
-            actual = valueAfterSet
+            actual = rewrittenValues.isEmpty ? valueAfterSet : rewrittenValues.removeFirst()
         }
     }
 
@@ -194,8 +195,30 @@ final class ChromeAddressEntryTests: XCTestCase {
             return .success
         })
 
-        XCTAssertThrowsError(try entry.submit())
+        XCTAssertThrowsError(try entry.submit()) { error in
+            XCTAssertEqual(
+                String(describing: error),
+                "Chrome kept changing the configured website address (it showed \"https://www.hulu.com/live\") after 5 attempts. No Backspace or Return was sent."
+            )
+        }
+        XCTAssertEqual(chrome.events.filter { $0 == "set-value" }.count, 5)
         XCTAssertFalse(chrome.events.contains("return"))
+    }
+
+    func testTransientlyRewrittenAddressIsSetAgainBeforeSubmitting() throws {
+        let expected = "https://www.hulu.com/"
+        let chrome = FakeChrome(valueAfterSet: expected)
+        chrome.rewrittenValues = ["hulu.com"]
+        let entry = makeEntry(chrome: chrome, expected: expected, backspace: {
+            XCTFail("Backspace must not be posted")
+            return .success
+        })
+
+        try entry.submit()
+
+        XCTAssertEqual(chrome.events.filter { $0 == "set-value" }.count, 2)
+        XCTAssertEqual(chrome.events.last, "log-submit-website")
+        XCTAssertEqual(chrome.events.filter { $0 == "return" }.count, 1)
     }
 
     func testFailedReturnActionIsReportedWithoutRetry() {
@@ -236,7 +259,8 @@ final class ChromeAddressEntryTests: XCTestCase {
                 return returnResult
             },
             logKeyResult: { event, _ in chrome.events.append("log-\(event)") },
-            readbackTimeout: readbackTimeout
+            readbackTimeout: readbackTimeout,
+            pause: { _ in }
         )
     }
 }

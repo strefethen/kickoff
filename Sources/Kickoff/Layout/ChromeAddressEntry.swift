@@ -46,6 +46,8 @@ struct ChromeAddressEntry {
     let postReturn: KeyPost
     let logKeyResult: (_ event: String, _ result: AXError) -> Void
     let readbackTimeout: TimeInterval
+    let valueAttempts: Int
+    let pause: (TimeInterval) -> Void
 
     init(
         chrome: ChromeAddressFieldAccessing,
@@ -55,7 +57,9 @@ struct ChromeAddressEntry {
         postBackspace: @escaping KeyPost = KickoffAXBackspaceToFrontmost,
         postReturn: @escaping KeyPost = HuluAXReturnToFrontmost,
         logKeyResult: @escaping (_ event: String, _ result: AXError) -> Void,
-        readbackTimeout: TimeInterval = 1
+        readbackTimeout: TimeInterval = 1,
+        valueAttempts: Int = 5,
+        pause: @escaping (TimeInterval) -> Void = Thread.sleep
     ) {
         self.chrome = chrome
         self.addressField = addressField
@@ -65,19 +69,16 @@ struct ChromeAddressEntry {
         self.postReturn = postReturn
         self.logKeyResult = logKeyResult
         self.readbackTimeout = readbackTimeout
+        self.valueAttempts = valueAttempts
+        self.pause = pause
     }
 
     func submit() throws {
-        try chrome.set(addressField, attribute: kAXValueAttribute, value: expected as CFString)
-        try validateRecipient()
-
-        switch try plan() {
+        switch try enterExpectedValue() {
         case .submitExactValue:
             break
         case .removeSelectedSuffix:
             try removeSelectedSuffix()
-        case nil:
-            throw AccessibilityFailure("Chrome changed the configured website address outside its selected autocomplete suffix. No Backspace or Return was sent.")
         }
 
         try validateRecipient()
@@ -89,6 +90,19 @@ struct ChromeAddressEntry {
         guard result == .success else {
             throw AccessibilityFailure("Submitting the configured website address failed with AX error \(result.rawValue).", axError: result)
         }
+    }
+
+    private func enterExpectedValue() throws -> ChromeAddressEntryPlan {
+        var shown = ""
+        for attempt in 1...max(valueAttempts, 1) {
+            if attempt > 1 { pause(0.25) }
+            try chrome.set(addressField, attribute: kAXValueAttribute, value: expected as CFString)
+            try validateRecipient()
+            if let plan = try plan() { return plan }
+            shown = try chrome.text(addressField, kAXValueAttribute)
+            logKeyResult("address-value-rewritten", .success)
+        }
+        throw AccessibilityFailure("Chrome kept changing the configured website address (it showed \"\(shown)\") after \(max(valueAttempts, 1)) attempts. No Backspace or Return was sent.")
     }
 
     private func removeSelectedSuffix() throws {

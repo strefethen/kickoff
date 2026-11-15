@@ -15,6 +15,8 @@ final class ChromeSetupTests: XCTestCase {
         var setupError: Error?
         var splitError: Error?
         var verifyError: Error?
+        var closeError: Error?
+        var ownsWindow = true
         var insets = ChromeBrowserInsets(top: 100, bottom: 0)
 
         init(id: Int, events: @escaping (String) -> Void) {
@@ -54,6 +56,19 @@ final class ChromeSetupTests: XCTestCase {
             events("verify:\(id):\(NSStringFromRect(frame))")
             if let verifyError { throw verifyError }
         }
+
+        func closeOwnedWindow() throws -> Bool {
+            events("close:\(id)")
+            if let closeError { throw closeError }
+            return ownsWindow
+        }
+    }
+
+    private final class FakeLog: SetupLogging {
+        let location = "/logs/setup.log"
+        var writeFailure: String?
+        private(set) var lines: [String] = []
+        func record(_ line: String) { lines.append(line) }
     }
 
     func testInstalledChromeIsOpenedBeforeSetupNeedsIt() throws {
@@ -154,7 +169,7 @@ final class ChromeSetupTests: XCTestCase {
         let website = try WebsiteURL("https://example.com/watch")
         var capturedMonitors: [Monitor] = []
         var capturedWebsites: [WebsiteURL] = []
-        let setup = ChromeSetup(target: target, website: website) { target, website in
+        let setup = ChromeSetup(target: target, website: website, openLog: { FakeLog() }) { target, website, _ in
             capturedMonitors.append(target.monitor)
             capturedWebsites.append(website)
             return FakeSession(id: capturedMonitors.count, events: { events.append($0) })
@@ -173,7 +188,7 @@ final class ChromeSetupTests: XCTestCase {
         let monitor = makeMonitor()
         let target = MonitorTarget(monitor: monitor, discover: { [monitor] })
         let website = try WebsiteURL("https://example.com/game")
-        let setup = ChromeSetup(target: target, website: website) { capturedTarget, capturedWebsite in
+        let setup = ChromeSetup(target: target, website: website, openLog: { FakeLog() }) { capturedTarget, capturedWebsite, _ in
             factoryCalls += 1
             XCTAssertEqual(capturedTarget.monitor, monitor)
             XCTAssertEqual(capturedWebsite, website)
@@ -188,15 +203,15 @@ final class ChromeSetupTests: XCTestCase {
         var events: [String] = []
         var factoryCalls = 0
         let monitor = makeMonitor()
-        let setup = ChromeSetup(target: MonitorTarget(monitor: monitor, discover: { [monitor] }), website: .approvedDefault) { _, _ in
+        let setup = ChromeSetup(target: MonitorTarget(monitor: monitor, discover: { [monitor] }), website: .approvedDefault, openLog: { FakeLog() }) { _, _, _ in
             factoryCalls += 1
             let session = FakeSession(id: factoryCalls, events: { events.append($0) })
             session.setupError = StubError.setup
             return session
         }
-        XCTAssertThrowsError(try setup.setup(mode: .single)) { XCTAssertEqual($0 as? StubError, .setup) }
+        XCTAssertThrowsError(try setup.setup(mode: .single)) { XCTAssertEqual(($0 as? ChromeSetupFailure)?.cause as? StubError, .setup) }
         XCTAssertEqual(factoryCalls, 1)
-        XCTAssertEqual(events, ["single:1"])
+        XCTAssertEqual(events, ["single:1", "close:1"])
     }
 
     func testQuadUsesTwoSequentialSessionsThenVerifiesPair() throws {
@@ -205,7 +220,7 @@ final class ChromeSetupTests: XCTestCase {
         let target = MonitorTarget(monitor: monitor, discover: { [monitor] })
         let website = try WebsiteURL("https://example.com/watch")
         var capturedWebsites: [WebsiteURL] = []
-        let setup = ChromeSetup(target: target, website: website) { target, capturedWebsite in
+        let setup = ChromeSetup(target: target, website: website, openLog: { FakeLog() }) { target, capturedWebsite, _ in
             XCTAssertEqual(target.monitor, monitor)
             capturedWebsites.append(capturedWebsite)
             let id = capturedWebsites.count
@@ -246,7 +261,7 @@ final class ChromeSetupTests: XCTestCase {
         var factoryCalls = 0
         let monitor = makeMonitor()
         let target = MonitorTarget(monitor: monitor, discover: { [monitor] })
-        let setup = ChromeSetup(target: target, website: .approvedDefault) { _, _ in
+        let setup = ChromeSetup(target: target, website: .approvedDefault, openLog: { FakeLog() }) { _, _, _ in
             factoryCalls += 1
             let session = FakeSession(id: factoryCalls, events: { _ in })
             session.splitError = StubError.setup
@@ -254,7 +269,7 @@ final class ChromeSetupTests: XCTestCase {
         }
 
         XCTAssertThrowsError(try setup.setup(mode: .quad)) { error in
-            XCTAssertEqual(error as? StubError, .setup)
+            XCTAssertEqual((error as? ChromeSetupFailure)?.cause as? StubError, .setup)
         }
         XCTAssertEqual(factoryCalls, 1)
     }
@@ -264,7 +279,7 @@ final class ChromeSetupTests: XCTestCase {
         var verifyCalls: [Int] = []
         let monitor = makeMonitor()
         let target = MonitorTarget(monitor: monitor, discover: { [monitor] })
-        let setup = ChromeSetup(target: target, website: .approvedDefault) { _, _ in
+        let setup = ChromeSetup(target: target, website: .approvedDefault, openLog: { FakeLog() }) { _, _, _ in
             factoryCalls += 1
             let id = factoryCalls
             let session = FakeSession(id: id, events: { event in
@@ -275,10 +290,108 @@ final class ChromeSetupTests: XCTestCase {
         }
 
         XCTAssertThrowsError(try setup.setup(mode: .quad)) { error in
-            XCTAssertEqual(error as? StubError, .verify)
+            XCTAssertEqual((error as? ChromeSetupFailure)?.cause as? StubError, .verify)
         }
         XCTAssertEqual(factoryCalls, 2)
         XCTAssertEqual(verifyCalls, [1])
+    }
+
+    func testQuadFailureClosesEveryCreatedWindowNewestFirstAndSaysSo() throws {
+        var events: [String] = []
+        var factoryCalls = 0
+        let monitor = makeMonitor()
+        let log = FakeLog()
+        let setup = ChromeSetup(target: MonitorTarget(monitor: monitor, discover: { [monitor] }), website: .approvedDefault, openLog: { log }) { _, _, _ in
+            factoryCalls += 1
+            let session = FakeSession(id: factoryCalls, events: { events.append($0) })
+            if factoryCalls == 2 { session.splitError = AccessibilityFailure("Create window on Test Display: placement failed.") }
+            return session
+        }
+
+        XCTAssertThrowsError(try setup.setup(mode: .quad)) { error in
+            XCTAssertEqual(String(describing: error), """
+            Create window on Test Display: placement failed.
+
+            Kickoff closed the 2 Chrome windows this setup opened.
+
+            Details: /logs/setup.log
+            """)
+        }
+        XCTAssertEqual(Array(events.suffix(2)), ["close:2", "close:1"])
+        XCTAssertTrue(log.lines.contains { $0.hasPrefix("setup-failed mode=quad") })
+        XCTAssertEqual(log.lines.last, "setup-cleanup closed=2 failures=0")
+    }
+
+    func testCleanupFailureIsReportedAndRemainingWindowsStillClose() throws {
+        var events: [String] = []
+        var factoryCalls = 0
+        let monitor = makeMonitor()
+        let setup = ChromeSetup(target: MonitorTarget(monitor: monitor, discover: { [monitor] }), website: .approvedDefault, openLog: { FakeLog() }) { _, _, _ in
+            factoryCalls += 1
+            let session = FakeSession(id: factoryCalls, events: { events.append($0) })
+            if factoryCalls == 2 {
+                session.splitError = StubError.setup
+                session.closeError = AccessibilityFailure("Chrome kept the setup window open.")
+            }
+            return session
+        }
+
+        XCTAssertThrowsError(try setup.setup(mode: .quad)) { error in
+            let description = String(describing: error)
+            XCTAssertTrue(description.contains("Kickoff closed 1 of the 2 Chrome windows this setup opened. Chrome kept the setup window open."))
+        }
+        XCTAssertEqual(Array(events.suffix(2)), ["close:2", "close:1"])
+    }
+
+    func testFailureBeforeAnyWindowExistsDoesNotClaimCleanup() throws {
+        let monitor = makeMonitor()
+        let setup = ChromeSetup(target: MonitorTarget(monitor: monitor, discover: { [monitor] }), website: .approvedDefault, openLog: { FakeLog() }) { _, _, _ in
+            let session = FakeSession(id: 1, events: { _ in })
+            session.ownsWindow = false
+            session.setupError = StubError.setup
+            return session
+        }
+
+        XCTAssertThrowsError(try setup.setup(mode: .split)) { error in
+            XCTAssertFalse(String(describing: error).contains("Kickoff closed"))
+        }
+    }
+
+    func testUnavailableSetupLogStopsBeforeAnyChromeWindow() throws {
+        var factoryCalls = 0
+        let monitor = makeMonitor()
+        let setup = ChromeSetup(
+            target: MonitorTarget(monitor: monitor, discover: { [monitor] }),
+            website: .approvedDefault,
+            openLog: { throw AccessibilityFailure("Kickoff could not open its setup log.") }
+        ) { _, _, _ in
+            factoryCalls += 1
+            return FakeSession(id: factoryCalls, events: { _ in })
+        }
+
+        XCTAssertThrowsError(try setup.setup(mode: .single)) { error in
+            XCTAssertEqual(String(describing: error), "Kickoff could not open its setup log.")
+        }
+        XCTAssertEqual(factoryCalls, 0)
+    }
+
+    func testSetupLogAppendsTimestampedLinesAndRotatesWhenLarge() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let url = directory.appendingPathComponent("setup.log")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let first = try SetupLog(url: url, maximumBytes: 10, now: { Date(timeIntervalSince1970: 0) })
+        first.record("one")
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "1970-01-01T00:00:00Z one\n")
+
+        let second = try SetupLog(url: url, maximumBytes: 10, now: { Date(timeIntervalSince1970: 0) })
+        second.record("two")
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "1970-01-01T00:00:00Z two\n")
+        XCTAssertEqual(
+            try String(contentsOf: directory.appendingPathComponent("setup.1.log"), encoding: .utf8),
+            "1970-01-01T00:00:00Z one\n"
+        )
+        XCTAssertNil(second.writeFailure)
     }
 
     private func makeMonitor(

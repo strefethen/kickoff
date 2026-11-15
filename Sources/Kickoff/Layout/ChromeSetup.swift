@@ -25,39 +25,101 @@ protocol ChromeWindowSettingUp: AnyObject {
     func placeWindow(frame: CGRect) throws
     func raiseWindow() throws
     func verifySplitWindow(frame: CGRect) throws
+    func closeOwnedWindow() throws -> Bool
 }
 
 extension ChromeLayout: ChromeWindowSettingUp {}
 
+struct ChromeSetupFailure: Error, CustomStringConvertible {
+    let cause: Error
+    let closedWindows: Int
+    let cleanupFailures: [String]
+    let logLocation: String
+    let logFailure: String?
+
+    var description: String {
+        var parts = [String(describing: cause)]
+        let openedWindows = closedWindows + cleanupFailures.count
+        if cleanupFailures.isEmpty {
+            if closedWindows == 1 {
+                parts.append("Kickoff closed the Chrome window this setup opened.")
+            } else if closedWindows > 1 {
+                parts.append("Kickoff closed the \(closedWindows) Chrome windows this setup opened.")
+            }
+        } else {
+            parts.append("Kickoff closed \(closedWindows) of the \(openedWindows) Chrome windows this setup opened. \(cleanupFailures.joined(separator: " "))")
+        }
+        if let logFailure {
+            parts.append("The setup log at \(logLocation) stopped recording: \(logFailure)")
+        } else {
+            parts.append("Details: \(logLocation)")
+        }
+        return parts.joined(separator: "\n\n")
+    }
+}
+
 /// Coordinates complete Chrome layouts while each session owns one new window.
 final class ChromeSetup {
-    typealias SessionFactory = (MonitorTarget, WebsiteURL) throws -> ChromeWindowSettingUp
+    typealias SessionFactory = (MonitorTarget, WebsiteURL, SetupLogging) throws -> ChromeWindowSettingUp
 
     private let target: MonitorTarget
     private let website: WebsiteURL
+    private let openLog: () throws -> SetupLogging
     private let makeSession: SessionFactory
 
     init(
         target: MonitorTarget,
         website: WebsiteURL,
-        makeSession: @escaping SessionFactory = { target, website in
+        openLog: @escaping () throws -> SetupLogging = { try SetupLog() },
+        makeSession: @escaping SessionFactory = { target, website, log in
             try ChromeApplication.ensureRunning()
-            return try ChromeLayout(target: target, website: website)
+            return try ChromeLayout(target: target, website: website, setupLog: log)
         }
     ) {
         self.target = target
         self.website = website
+        self.openLog = openLog
         self.makeSession = makeSession
     }
 
     func setup(mode: ChromeSetupMode) throws {
-        switch mode {
-        case .single:
-            try makeSession(target, website).setupSingleWindow()
-        case .split:
-            try makeSession(target, website).setup()
-        case .quad:
-            try setupQuad()
+        let log = try openLog()
+        log.record("setup-start mode=\(mode) display=\(target.monitor.name) bounds=\(NSStringFromRect(target.monitor.bounds)) visible=\(NSStringFromRect(target.monitor.visibleBounds))")
+        var sessions: [ChromeWindowSettingUp] = []
+        let session = { () throws -> ChromeWindowSettingUp in
+            let created = try self.makeSession(self.target, self.website, log)
+            sessions.append(created)
+            return created
+        }
+        do {
+            switch mode {
+            case .single:
+                try session().setupSingleWindow()
+            case .split:
+                try session().setup()
+            case .quad:
+                try setupQuad(session: session)
+            }
+            log.record("setup-complete mode=\(mode)")
+        } catch {
+            log.record("setup-failed mode=\(mode) error=\(String(describing: error).replacingOccurrences(of: "\n", with: " "))")
+            var closedWindows = 0
+            var cleanupFailures: [String] = []
+            for created in sessions.reversed() {
+                do {
+                    if try created.closeOwnedWindow() { closedWindows += 1 }
+                } catch {
+                    cleanupFailures.append(String(describing: error))
+                }
+            }
+            log.record("setup-cleanup closed=\(closedWindows) failures=\(cleanupFailures.count)")
+            throw ChromeSetupFailure(
+                cause: error,
+                closedWindows: closedWindows,
+                cleanupFailures: cleanupFailures,
+                logLocation: log.location,
+                logFailure: log.writeFailure
+            )
         }
     }
 
@@ -102,14 +164,14 @@ final class ChromeSetup {
         return (top, bottom)
     }
 
-    private func setupQuad() throws {
+    private func setupQuad(session: () throws -> ChromeWindowSettingUp) throws {
         _ = try target.validate()
         let visibleBounds = target.monitor.visibleBounds
 
-        let top = try makeSession(target, website)
+        let top = try session()
         try top.setupSplitWindow(frame: visibleBounds)
 
-        let bottom = try makeSession(target, website)
+        let bottom = try session()
         try bottom.setupSplitWindow(frame: visibleBounds)
 
         let topInsets = try top.measuredBrowserInsets()
