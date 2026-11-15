@@ -73,7 +73,7 @@ final class ChromeSetup {
         openLog: @escaping () throws -> SetupLogging = { try SetupLog() },
         makeSession: @escaping SessionFactory = { target, website, log in
             try ChromeApplication.ensureRunning()
-            return try ChromeLayout(target: target, website: website, setupLog: log)
+            return try ChromeLayout(target: target, website: website, setupLog: log, scripting: ChromeAppleScriptClient())
         }
     ) {
         self.target = target

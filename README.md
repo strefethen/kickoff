@@ -30,6 +30,7 @@ Before using Kickoff, enable [chrome://flags/#enable-tab-audio-muting](chrome://
 1. Download the latest `Kickoff-<version>-arm64.zip` from [GitHub Releases](https://github.com/strefethen/kickoff/releases).
 2. Unzip the download and move `Kickoff.app` to `/Applications`.
 3. Open Kickoff, choose **Open Accessibility Settings…** from its menu, then enable Kickoff under **Privacy & Security → Accessibility** so it can arrange and control Chrome.
+4. The first time you set up Chrome, macOS asks whether Kickoff may control Google Chrome. Choose **Allow** so Kickoff can open its windows directly on the display you picked. If you chose **Don't Allow**, enable Kickoff under **Privacy & Security → Automation → Google Chrome**.
 
 ## Build and launch
 

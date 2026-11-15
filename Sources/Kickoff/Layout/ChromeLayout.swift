@@ -13,13 +13,6 @@ enum ChromeViewClass {
     static let tab = "Tab"
 }
 
-enum ChromeMenu {
-    static let fileMenuIndex = 2
-    static let commandIdentifier = "commandDispatch:"
-    static let newWindowKey = "N"
-    static let commandOnlyModifiers = "0"
-}
-
 /// Native AX setup. Each run owns only the new Chrome window it creates.
 final class ChromeLayout {
     let chrome: ChromeLayoutAccessing
@@ -30,6 +23,7 @@ final class ChromeLayout {
     private let sleep: (TimeInterval) -> Void
     private let windowStateTimeout: TimeInterval
     private let setupLog: SetupLogging?
+    private let scripting: ChromeWindowScripting
     private var ownedWindow: AXUIElement?
     private let layoutTerminals: Set<String> = [
         "AXWebArea", kAXTextFieldRole, kAXButtonRole, kAXRadioButtonRole,
@@ -44,7 +38,8 @@ final class ChromeLayout {
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (TimeInterval) -> Void = Thread.sleep,
         windowStateTimeout: TimeInterval = 8,
-        setupLog: SetupLogging? = nil
+        setupLog: SetupLogging? = nil,
+        scripting: ChromeWindowScripting
     ) throws {
         self.target = target
         self.monitor = target.monitor
@@ -54,6 +49,7 @@ final class ChromeLayout {
         self.sleep = sleep
         self.windowStateTimeout = windowStateTimeout
         self.setupLog = setupLog
+        self.scripting = scripting
     }
 
     func rect(_ element: AXUIElement) throws -> CGRect {
@@ -105,26 +101,73 @@ final class ChromeLayout {
     @discardableResult
     func prepare(frame: CGRect? = nil) throws -> ChromeWindowSnapshot {
         _ = try target.validate()
-        let (before, command) = try readyNewWindowCommand()
-        try performAction(kAXPressAction, on: command)
-        let deadline = now().addingTimeInterval(3)
+        let requestedFrame = frame ?? target.monitor.visibleBounds.insetBy(dx: 24, dy: 24)
+        let before = try readyWindows()
+        let scriptID = try requestWindow(at: requestedFrame)
+        log(["event": "window-requested", "chromeWindowID": scriptID, "frame": NSStringFromRect(requestedFrame)])
+        let window: AXUIElement
+        do {
+            window = try pairRequestedWindow(at: requestedFrame, excluding: before)
+        } catch {
+            do {
+                try scripting.closeWindow(id: scriptID)
+                log(["event": "close-requested-window", "chromeWindowID": scriptID])
+            } catch let closeError {
+                throw AccessibilityFailure("\(error) Kickoff also could not close the window it requested: \(closeError)")
+            }
+            throw AccessibilityFailure("\(error) Kickoff closed the window it requested.")
+        }
+        ownedWindow = window
+        try applyNormalFrame(requestedFrame, to: window, moveBeforeResize: true)
+        log(["event": "window-on-monitor", "chromePID": chrome.pid, "display": monitor.name])
+        return try waitForWindow(seconds: windowStateTimeout) { _ in true }
+    }
+
+    private func pairRequestedWindow(at frame: CGRect, excluding before: [AXUIElement]) throws -> AXUIElement {
+        let deadline = now().addingTimeInterval(windowStateTimeout)
+        var created: [AXUIElement] = []
         repeat {
-            let created = try chrome.windows().filter { candidate in
+            created = try chrome.windows().filter { candidate in
                 !before.contains(where: { CFEqual($0, candidate) })
             }
-            guard created.count <= 1 else {
-                throw AccessibilityFailure("Multiple new Chrome windows appeared; setup stopped.")
+            let placed = created.filter { isNewWindow($0, at: frame) }
+            guard placed.count <= 1 else {
+                throw AccessibilityFailure("Several new Chrome windows appeared at the setup position, so Kickoff could not tell which one it opened.")
             }
-            if let window = created.first {
-                ownedWindow = window
-                let requestedFrame = frame ?? target.monitor.visibleBounds.insetBy(dx: 24, dy: 24)
-                try applyNormalFrame(requestedFrame, to: window, moveBeforeResize: true)
-                log(["event": "window-on-monitor", "chromePID": chrome.pid, "display": monitor.name])
-                return try waitForWindow(seconds: windowStateTimeout) { _ in true }
-            }
+            if let window = placed.first { return window }
             sleep(0.2)
         } while now() < deadline
-        throw AccessibilityFailure("Chrome did not create a new window.")
+        throw AccessibilityFailure("Chrome did not open the requested window at \(NSStringFromRect(frame)) (\(created.count) new windows appeared).")
+    }
+
+    private func readyWindows() throws -> [AXUIElement] {
+        let deadline = now().addingTimeInterval(2)
+        while true {
+            do {
+                return try chrome.windows()
+            } catch let failure as AccessibilityFailure
+                where failure.axError == .cannotComplete || failure.axError == .invalidUIElement {
+                guard now() < deadline else { throw failure }
+                sleep(0.1)
+            }
+        }
+    }
+
+    private func requestWindow(at frame: CGRect) throws -> String {
+        let deadline = now().addingTimeInterval(windowStateTimeout)
+        while true {
+            do {
+                return try scripting.makeWindow(bounds: frame)
+            } catch let failure as ChromeScriptingFailure where failure.kind == .notReady {
+                guard now() < deadline else { throw failure }
+                sleep(0.2)
+            }
+        }
+    }
+
+    private func isNewWindow(_ window: AXUIElement, at frame: CGRect) -> Bool {
+        guard let actual = try? rect(window) else { return false }
+        return matchesFrame(actual, frame)
     }
 
     func browseActiveWebsite(expectedPages: Int) throws {
@@ -535,57 +578,6 @@ final class ChromeLayout {
 
     private func matchesFrame(_ actual: CGRect, _ expected: CGRect) -> Bool {
         NormalFrameObservation.matchesFrame(actual, expected)
-    }
-
-    private func children(_ element: AXUIElement) throws -> [AXUIElement] {
-        guard let children = try chrome.attribute(element, kAXChildrenAttribute) as? [AXUIElement] else {
-            throw AccessibilityFailure("Chrome's required menu children are unavailable.")
-        }
-        return children
-    }
-
-    private func uniqueChild(_ parent: AXUIElement, role: String) throws -> AXUIElement {
-        let matches = try children(parent).filter { try chrome.text($0, kAXRoleAttribute) == role }
-        guard matches.count == 1, let match = matches.first else {
-            throw AccessibilityFailure("Chrome's \(role) is unavailable or ambiguous.")
-        }
-        return match
-    }
-
-    private func newWindowCommand() throws -> AXUIElement {
-        guard let rawMenu = try chrome.attribute(chrome.application, kAXMenuBarAttribute),
-              CFGetTypeID(rawMenu) == AXUIElementGetTypeID() else {
-            throw AccessibilityFailure("Chrome's menu bar is unavailable.")
-        }
-        let menuBarItems = try children(rawMenu as! AXUIElement)
-        guard menuBarItems.count > ChromeMenu.fileMenuIndex else {
-            throw AccessibilityFailure("Chrome's File menu is unavailable.")
-        }
-        let menu = try uniqueChild(menuBarItems[ChromeMenu.fileMenuIndex], role: kAXMenuRole)
-        let matches = try children(menu).filter { item in
-            try chrome.text(item, kAXRoleAttribute) == kAXMenuItemRole &&
-                chrome.text(item, "AXIdentifier") == ChromeMenu.commandIdentifier &&
-                chrome.text(item, kAXMenuItemCmdCharAttribute) == ChromeMenu.newWindowKey &&
-                chrome.text(item, kAXMenuItemCmdModifiersAttribute) == ChromeMenu.commandOnlyModifiers
-        }
-        guard matches.count == 1, let match = matches.first else {
-            throw AccessibilityFailure("Chrome's New Window command (⌘N) is unavailable or ambiguous.")
-        }
-        return match
-    }
-
-    private func readyNewWindowCommand() throws -> ([AXUIElement], AXUIElement) {
-        let deadline = now().addingTimeInterval(2)
-        while true {
-            do {
-                let windows = try chrome.windows()
-                return (windows, try newWindowCommand())
-            } catch let failure as AccessibilityFailure
-                where failure.axError == .cannotComplete || failure.axError == .invalidUIElement {
-                guard now() < deadline else { throw failure }
-                sleep(0.1)
-            }
-        }
     }
 
     private func pageURLs(_ window: ChromeWindowSnapshot) -> [String] {

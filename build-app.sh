@@ -89,7 +89,7 @@ if [[ "$task_mode" == "release" ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $RELEASE_VERSION" "$staging_bundle/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $RELEASE_BUILD" "$staging_bundle/Contents/Info.plist"
     "$task_root/scripts/build-icon.sh" "$task_root/Resources/AppIcon.png" "$staging_bundle/Contents/Resources/AppIcon.icns"
-    /usr/bin/codesign --force --sign "$CODE_SIGN_IDENTITY" --timestamp --options runtime "$staging_bundle"
+    /usr/bin/codesign --force --sign "$CODE_SIGN_IDENTITY" --timestamp --options runtime --entitlements "$task_root/Kickoff.entitlements" "$staging_bundle"
     /usr/bin/codesign --verify --deep --strict --verbose=2 "$staging_bundle"
 
     /bin/rm -rf "$task_bundle"
@@ -107,7 +107,7 @@ else
     /bin/cp "$task_root/.build/release/Kickoff" "$staging_bundle/Contents/MacOS/Kickoff"
     /bin/cp "$task_root/Info.plist" "$staging_bundle/Contents/Info.plist"
     "$task_root/scripts/build-icon.sh" "$task_root/Resources/AppIcon.png" "$staging_bundle/Contents/Resources/AppIcon.icns"
-    /usr/bin/codesign --force --sign "$task_signing_identity" --timestamp=none "$staging_bundle"
+    /usr/bin/codesign --force --sign "$task_signing_identity" --timestamp=none --entitlements "$task_root/Kickoff.entitlements" "$staging_bundle"
     /usr/bin/codesign --verify --strict "$staging_bundle"
 
     /bin/rm -rf "$task_bundle"

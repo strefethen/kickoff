@@ -15,7 +15,7 @@ final class ChromeLayoutTests: XCTestCase {
         }
     }
 
-    private final class FakeChrome: ChromeLayoutAccessing {
+    private final class FakeChrome: ChromeLayoutAccessing, ChromeWindowScripting {
         enum FullScreenRead {
             case value(Bool?)
             case failure(AccessibilityFailure)
@@ -60,6 +60,20 @@ final class ChromeLayoutTests: XCTestCase {
         private(set) var setAttributes: [String] = []
         private(set) var setSizes: [CGSize] = []
         private var currentFrame = CGRect.zero
+        var scriptFailures: [ChromeScriptingFailure] = []
+        var replacementFrame: CGRect?
+        private(set) var requestedFrames: [CGRect] = []
+        private(set) var closedScriptIDs: [String] = []
+
+        func makeWindow(bounds: CGRect) throws -> String {
+            requestedFrames.append(bounds)
+            if !scriptFailures.isEmpty { throw scriptFailures.removeFirst() }
+            return "7001"
+        }
+
+        func closeWindow(id: String) throws {
+            closedScriptIDs.append(id)
+        }
 
         func attribute(_ element: AXUIElement, _ name: String) throws -> CFTypeRef? {
             if CFEqual(element, application), name == kAXMenuBarAttribute { return menuBar }
@@ -91,6 +105,16 @@ final class ChromeLayoutTests: XCTestCase {
                 }
                 if name == kAXSizeAttribute {
                     var size = currentFrame.size
+                    return AXValueCreate(.cgSize, &size)
+                }
+            }
+            if CFEqual(element, replacementWindow), let replacementFrame {
+                if name == kAXPositionAttribute {
+                    var point = replacementFrame.origin
+                    return AXValueCreate(.cgPoint, &point)
+                }
+                if name == kAXSizeAttribute {
+                    var size = replacementFrame.size
                     return AXValueCreate(.cgSize, &size)
                 }
             }
@@ -182,29 +206,28 @@ final class ChromeLayoutTests: XCTestCase {
 
     private let bounds = CGRect(x: 0, y: 0, width: 1920, height: 1080)
 
-    func testNewWindowMovesToTargetBeforeExpandingAndCompletesWithoutSleepWhenReady() throws {
+    func testWindowIsRequestedAtTargetFrameAndPairedWithoutMenuOrSleep() throws {
         let chrome = FakeChrome()
-        let inherited = CGRect(x: 2560, y: 25, width: 800, height: 400)
-        let expected = CGRect(x: 0, y: 25, width: 1920, height: 527)
+        let expected = CGRect(x: -1920, y: 25, width: 1920, height: 1055)
         chrome.windowReads = [[], [chrome.window]]
-        chrome.frameReads = [inherited, expected]
+        chrome.frameReads = [expected]
         chrome.inspectedNodes = [pageNode(chrome.window)]
-        let (layout, clock) = try makeLayout(chrome: chrome)
+        let (layout, clock) = try makeLayout(chrome: chrome, bounds: CGRect(x: -1920, y: 0, width: 1920, height: 1080))
 
         try layout.prepare(frame: expected)
 
-        XCTAssertEqual(chrome.setAttributes, [kAXPositionAttribute, kAXSizeAttribute])
-        XCTAssertEqual(chrome.setSizes, [expected.size])
+        XCTAssertEqual(chrome.requestedFrames, [expected])
+        XCTAssertEqual(chrome.presses, 0)
+        XCTAssertEqual(chrome.closedScriptIDs, [])
         XCTAssertEqual(clock.sleeps, [])
     }
 
     func testTallerInheritedWindowShrinksBeforeMovingOntoShorterTarget() throws {
         let chrome = FakeChrome()
-        // Chrome sizes a new window from the last active one, here on a taller monitor.
         let inherited = CGRect(x: 2560, y: 167, width: 1673, height: 1128)
         let expected = CGRect(x: 24, y: 49, width: 1872, height: 1007)
         chrome.windowReads = [[], [chrome.window]]
-        chrome.frameReads = [inherited, expected]
+        chrome.frameReads = [expected, inherited, expected]
         chrome.inspectedNodes = [pageNode(chrome.window)]
         let (layout, clock) = try makeLayout(chrome: chrome)
 
@@ -213,6 +236,75 @@ final class ChromeLayoutTests: XCTestCase {
         XCTAssertEqual(chrome.setAttributes, [kAXSizeAttribute, kAXPositionAttribute, kAXSizeAttribute])
         XCTAssertEqual(chrome.setSizes, [CGSize(width: 1673, height: 1007), expected.size])
         XCTAssertEqual(clock.sleeps, [])
+    }
+
+    func testChromeNotReadyForScriptingIsRetriedWithinDeadline() throws {
+        let chrome = FakeChrome()
+        let expected = CGRect(x: 0, y: 25, width: 1920, height: 527)
+        chrome.scriptFailures = [.from(errorNumber: -600, message: "not running"), .from(errorNumber: -609, message: "connection invalid")]
+        chrome.windowReads = [[], [chrome.window]]
+        chrome.frameReads = [expected]
+        chrome.inspectedNodes = [pageNode(chrome.window)]
+        let (layout, clock) = try makeLayout(chrome: chrome)
+
+        try layout.prepare(frame: expected)
+
+        XCTAssertEqual(chrome.requestedFrames, [expected, expected, expected])
+        XCTAssertEqual(clock.sleeps, [0.2, 0.2])
+    }
+
+    func testDeniedAutomationStopsWithoutRetryOrWindow() throws {
+        let chrome = FakeChrome()
+        chrome.scriptFailures = [.from(errorNumber: -1743, message: "Not authorized")]
+        chrome.windowReads = [[]]
+        let (layout, clock) = try makeLayout(chrome: chrome)
+
+        XCTAssertThrowsError(try layout.prepare(frame: CGRect(x: 0, y: 25, width: 1920, height: 527))) { error in
+            XCTAssertEqual((error as? ChromeScriptingFailure)?.kind, .notPermitted)
+            XCTAssertTrue(String(describing: error).contains("Privacy & Security > Automation"))
+        }
+        XCTAssertEqual(chrome.requestedFrames.count, 1)
+        XCTAssertEqual(clock.sleeps, [])
+    }
+
+    func testTimedOutWindowRequestIsNeverRepeated() throws {
+        let chrome = FakeChrome()
+        chrome.scriptFailures = [.from(errorNumber: -1712, message: "timed out")]
+        chrome.windowReads = [[]]
+        let (layout, _) = try makeLayout(chrome: chrome)
+
+        XCTAssertThrowsError(try layout.prepare(frame: CGRect(x: 0, y: 25, width: 1920, height: 527)))
+        XCTAssertEqual(chrome.requestedFrames.count, 1)
+    }
+
+    func testRestoredWindowElsewhereIsNeverPairedAndRequestedWindowIsClosedOnTimeout() throws {
+        let chrome = FakeChrome()
+        let expected = CGRect(x: 0, y: 25, width: 1920, height: 527)
+        chrome.windowReads = [[], [chrome.window]]
+        chrome.frameReads = [CGRect(x: 2600, y: 100, width: 1200, height: 900)]
+        let (layout, _) = try makeLayout(chrome: chrome, timeout: 1)
+
+        XCTAssertThrowsError(try layout.prepare(frame: expected)) { error in
+            XCTAssertTrue(String(describing: error).hasPrefix("Chrome did not open the requested window at {{0, 25}, {1920, 527}}"))
+        }
+        XCTAssertEqual(chrome.closedScriptIDs, ["7001"])
+        XCTAssertFalse(try layout.closeOwnedWindow())
+        XCTAssertEqual(chrome.setAttributes, [])
+    }
+
+    func testTwoNewWindowsAtSetupFrameAreNeverGuessedBetween() throws {
+        let chrome = FakeChrome()
+        let expected = CGRect(x: 0, y: 25, width: 1920, height: 527)
+        chrome.windowReads = [[], [chrome.window, chrome.replacementWindow]]
+        chrome.frameReads = [expected]
+        chrome.replacementFrame = expected
+        let (layout, _) = try makeLayout(chrome: chrome)
+
+        XCTAssertThrowsError(try layout.prepare(frame: expected)) { error in
+            XCTAssertTrue(String(describing: error).hasPrefix("Several new Chrome windows appeared"))
+            XCTAssertTrue(String(describing: error).hasSuffix("Kickoff closed the window it requested."))
+        }
+        XCTAssertEqual(chrome.closedScriptIDs, ["7001"])
     }
 
     func testNewWindowRetriesBrieflyWhenChromeIsStillBusy() throws {
@@ -227,7 +319,7 @@ final class ChromeLayoutTests: XCTestCase {
         try layout.prepare(frame: expected)
 
         XCTAssertEqual(clock.sleeps, [0.1, 0.1])
-        XCTAssertEqual(chrome.presses, 1)
+        XCTAssertEqual(chrome.requestedFrames, [expected])
     }
 
     func testBlankNewTabDoesNotNeedPageURLBeforeNavigation() throws {
@@ -241,7 +333,7 @@ final class ChromeLayoutTests: XCTestCase {
         let window = try layout.prepare(frame: expected)
 
         XCTAssertTrue(window.nodes.isEmpty)
-        XCTAssertEqual(chrome.presses, 1)
+        XCTAssertEqual(chrome.requestedFrames, [expected])
         XCTAssertEqual(clock.sleeps, [])
     }
 
@@ -270,7 +362,7 @@ final class ChromeLayoutTests: XCTestCase {
         let expected = CGRect(x: 0, y: 25, width: 1920, height: 527)
         let inherited = CGRect(x: 0, y: 0, width: 800, height: 400)
         chrome.windowReads = [[], [chrome.window]]
-        chrome.frameReads = [inherited, bounds.insetBy(dx: 20, dy: 20), expected]
+        chrome.frameReads = [expected, inherited, bounds.insetBy(dx: 20, dy: 20), expected]
         chrome.inspectedNodes = [pageNode(chrome.window)]
         let (layout, clock) = try makeLayout(chrome: chrome)
 
@@ -287,7 +379,7 @@ final class ChromeLayoutTests: XCTestCase {
         let inherited = CGRect(x: 2582, y: 47, width: 1370, height: 1007)
         let snappedBack = CGRect(x: 2582, y: 47, width: 1920, height: 1055)
         chrome.windowReads = [[], [chrome.window]]
-        chrome.frameReads = [inherited, snappedBack, snappedBack, expected]
+        chrome.frameReads = [expected, inherited, snappedBack, snappedBack, expected]
         chrome.inspectedNodes = [pageNode(chrome.window)]
         let (layout, clock) = try makeLayout(chrome: chrome)
 
@@ -331,7 +423,7 @@ final class ChromeLayoutTests: XCTestCase {
         let expected = CGRect(x: 0, y: 25, width: 1920, height: 1055)
         let stuck = CGRect(x: 0, y: 47, width: 1370, height: 1007)
         chrome.windowReads = [[], [chrome.window]]
-        chrome.frameReads = [stuck]
+        chrome.frameReads = [expected, stuck]
         let (layout, _) = try makeLayout(chrome: chrome, timeout: 1)
 
         XCTAssertThrowsError(try layout.prepare(frame: expected)) { error in
@@ -374,7 +466,7 @@ final class ChromeLayoutTests: XCTestCase {
         XCTAssertThrowsError(try layout.closeOwnedWindow()) { error in
             XCTAssertTrue(String(describing: error).contains("could not confirm it closed"))
         }
-        XCTAssertEqual(chrome.presses, 1)
+        XCTAssertEqual(chrome.presses, 0)
     }
 
     func testCloseWaitsForBrieflyUnlistedOwnedWindowThenClosesIt() throws {
@@ -395,6 +487,7 @@ final class ChromeLayoutTests: XCTestCase {
         let chrome = FakeChrome()
         chrome.windowReads = [[], [chrome.window]]
         chrome.fullScreenReads = [.value(nil)]
+        chrome.frameReads = [CGRect(x: 0, y: 25, width: 1920, height: 527)]
         let (layout, clock) = try makeLayout(chrome: chrome)
 
         XCTAssertThrowsError(try layout.prepare(frame: CGRect(x: 0, y: 25, width: 1920, height: 527))) { error in
@@ -416,6 +509,11 @@ final class ChromeLayoutTests: XCTestCase {
 
         XCTAssertEqual(chrome.inspectCount, 2)
         XCTAssertEqual(clock.sleeps, [0.2])
+    }
+
+    func testProcessLivenessComesFromTheKernel() {
+        XCTAssertTrue(ChromeAccessibilityClient.processIsAlive(getpid()))
+        XCTAssertFalse(ChromeAccessibilityClient.processIsAlive(99_999_999))
     }
 
     func testCloseWithoutOwnedWindowNeverTouchesChrome() throws {
@@ -677,7 +775,8 @@ final class ChromeLayoutTests: XCTestCase {
             website: .approvedDefault,
             chrome: chrome,
             now: { clock.current },
-            sleep: clock.sleep
+            sleep: clock.sleep,
+            scripting: chrome
         )
 
         XCTAssertThrowsError(try layout.enterFullScreen()) { error in
@@ -733,9 +832,10 @@ final class ChromeLayoutTests: XCTestCase {
 
     private func makeLayout(
         chrome: FakeChrome,
-        timeout: TimeInterval = 8
+        timeout: TimeInterval = 8,
+        bounds: CGRect? = nil
     ) throws -> (ChromeLayout, FakeClock) {
-        let monitor = makeMonitor(bounds: bounds)
+        let monitor = makeMonitor(bounds: bounds ?? self.bounds)
         let clock = FakeClock()
         let layout = try ChromeLayout(
             target: MonitorTarget(monitor: monitor, discover: { [monitor] }),
@@ -743,7 +843,8 @@ final class ChromeLayoutTests: XCTestCase {
             chrome: chrome,
             now: { clock.current },
             sleep: clock.sleep,
-            windowStateTimeout: timeout
+            windowStateTimeout: timeout,
+            scripting: chrome
         )
         return (layout, clock)
     }

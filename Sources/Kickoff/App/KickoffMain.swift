@@ -86,7 +86,8 @@ struct KickoffMain {
             _ = NSApplication.shared
             let layout = try ChromeLayout(
                 target: MonitorSelection().pinTarget(),
-                website: .approvedDefault
+                website: .approvedDefault,
+                scripting: ChromeAppleScriptClient()
             )
             output = try layout.environment()
         case "--setup" where arguments.count == 1,
@@ -96,14 +97,15 @@ struct KickoffMain {
             let website = try WebsitePreferences().currentURL()
             let mode: ChromeSetupMode = arguments[0] == "--setup-quad" ? .quad : .split
             try ChromeSetup(target: target, website: website).setup(mode: mode)
-            output = try ChromeLayout(target: target, website: website).environment()
+            output = try ChromeLayout(target: target, website: website, scripting: ChromeAppleScriptClient()).environment()
         case "--prepare" where arguments.count == 1,
              "--split" where arguments.count == 1,
              "--fullscreen" where arguments.count == 1:
             _ = NSApplication.shared
             let layout = try ChromeLayout(
                 target: MonitorSelection().pinTarget(),
-                website: WebsiteURL.approvedDefault
+                website: WebsiteURL.approvedDefault,
+                scripting: ChromeAppleScriptClient()
             )
             if arguments[0] == "--prepare" { _ = try layout.prepare() }
             if arguments[0] == "--split" { try layout.split() }

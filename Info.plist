@@ -26,6 +26,8 @@
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Kickoff asks Google Chrome to open its setup windows directly on the display you chose.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>

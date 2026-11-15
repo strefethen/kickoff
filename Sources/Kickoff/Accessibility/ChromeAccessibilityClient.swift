@@ -75,13 +75,17 @@ final class ChromeAccessibilityClient: ChromeAccessibilityAccessing {
     }
 
     func windows() throws -> [AXUIElement] {
-        guard NSRunningApplication(processIdentifier: pid)?.isTerminated == false else {
+        guard Self.processIsAlive(pid) else {
             throw ChromeProcessUnavailable(description: "Chrome exited; waiting for Chrome to reopen.")
         }
         guard let windows = try attribute(application, kAXWindowsAttribute) as? [AXUIElement] else {
             throw AccessibilityFailure("Chrome did not expose its windows.")
         }
         return windows
+    }
+
+    static func processIsAlive(_ pid: pid_t) -> Bool {
+        kill(pid, 0) == 0 || errno == EPERM
     }
 
     func isMinimized(_ window: AXUIElement) throws -> Bool {
