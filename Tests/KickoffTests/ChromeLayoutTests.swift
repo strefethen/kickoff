@@ -55,6 +55,7 @@ final class ChromeLayoutTests: XCTestCase {
         private(set) var frameReadCount = 0
         private(set) var inspectCount = 0
         var onInspect: ((Int) -> Void)?
+        var onPerform: ((String) -> Void)?
         private(set) var presses = 0
         private(set) var performedActions: [String] = []
         private(set) var setAttributes: [String] = []
@@ -192,6 +193,7 @@ final class ChromeLayoutTests: XCTestCase {
 
         func performOnce(_ action: String, on element: AXUIElement) -> AXError {
             performedActions.append(action)
+            onPerform?(action)
             if action == kAXPressAction { presses += 1 }
             return action == kAXRaiseAction ? raiseResult : .success
         }
@@ -628,6 +630,43 @@ final class ChromeLayoutTests: XCTestCase {
 
         XCTAssertEqual(chrome.performedActions.filter { $0 == kAXRaiseAction }, [kAXRaiseAction])
         XCTAssertEqual(clock.sleeps, [])
+    }
+
+    func testSetupWindowAlreadyFocusedIsNotRaisedBeforeSubmission() throws {
+        let chrome = FakeChrome()
+        let expected = CGRect(x: 0, y: 25, width: 1920, height: 1055)
+        chrome.windowReads = [[], [chrome.window]]
+        chrome.frameReads = [expected]
+        chrome.inspectedNodes = [pageNode(chrome.leftPage)]
+        chrome.mainWindow = chrome.window
+        chrome.focusedWindow = chrome.window
+        let (layout, _) = try makeLayout(chrome: chrome)
+
+        try layout.prepare(frame: expected)
+        try layout.focusOwnedWindowForSubmission()
+
+        XCTAssertFalse(chrome.performedActions.contains(kAXRaiseAction))
+    }
+
+    func testSetupWindowThatLostFocusIsRaisedBeforeSubmission() throws {
+        let chrome = FakeChrome()
+        let expected = CGRect(x: 0, y: 25, width: 1920, height: 1055)
+        chrome.windowReads = [[], [chrome.window]]
+        chrome.frameReads = [expected]
+        chrome.inspectedNodes = [pageNode(chrome.leftPage)]
+        chrome.mainWindow = chrome.replacementWindow
+        chrome.focusedWindow = chrome.replacementWindow
+        chrome.onPerform = { action in
+            guard action == kAXRaiseAction else { return }
+            chrome.mainWindow = chrome.window
+            chrome.focusedWindow = chrome.window
+        }
+        let (layout, _) = try makeLayout(chrome: chrome)
+
+        try layout.prepare(frame: expected)
+        try layout.focusOwnedWindowForSubmission()
+
+        XCTAssertEqual(chrome.performedActions.filter { $0 == kAXRaiseAction }, [kAXRaiseAction])
     }
 
     func testRaiseRequiresOwnedWindowAndNeverAdoptsExistingWindow() throws {

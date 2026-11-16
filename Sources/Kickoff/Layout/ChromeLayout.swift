@@ -341,6 +341,15 @@ final class ChromeLayout {
         throw AccessibilityFailure("Chrome did not make the raised setup window main and focused.")
     }
 
+    func focusOwnedWindowForSubmission() throws {
+        guard let window = ownedWindow else {
+            throw AccessibilityFailure("Website submission requires the window created by this setup session.")
+        }
+        if isElement(try chrome.attribute(chrome.application, kAXFocusedWindowAttribute), equalTo: window) { return }
+        log(["event": "setup-window-not-focused"])
+        try raiseWindow()
+    }
+
     func closeOwnedWindow() throws -> Bool {
         guard let window = ownedWindow else { return false }
         let listedDeadline = now().addingTimeInterval(min(windowStateTimeout, 3))
@@ -601,6 +610,7 @@ final class ChromeLayout {
             guard NSWorkspace.shared.frontmostApplication?.processIdentifier == self.chrome.pid else {
                 throw AccessibilityFailure("Chrome did not become the foreground app. No Return was sent.")
             }
+            try self.focusOwnedWindowForSubmission()
             try self.chrome.set(addressField, attribute: kAXFocusedAttribute, value: kCFBooleanTrue)
             let entry = ChromeAddressEntry(
                 chrome: self.chrome,
