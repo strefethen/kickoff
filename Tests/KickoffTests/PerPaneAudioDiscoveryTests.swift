@@ -43,6 +43,8 @@ private final class PaneChrome: ChromeAccessibilityAccessing {
     let windowA = AXUIElementCreateApplication(101)
     let windowB = AXUIElementCreateApplication(102)
     var panes: [Pane] = []
+    var devToolsDockedInWindow: AXUIElement?
+    private let devTools = AXUIElementCreateApplication(9_000)
     private(set) var pressedPanes: [Int] = []
 
     private var windowList: [AXUIElement] {
@@ -127,7 +129,10 @@ private final class PaneChrome: ChromeAccessibilityAccessing {
     ) throws -> [AccessibilityNode] {
         if windowList.contains(where: { CFEqual($0, root) }) {
             let inWindow = panes.filter { CFEqual($0.window, root) }
-            return inWindow.map { node($0.web, role: "AXWebArea", title: $0.title, url: $0.url, depth: 2) } +
+            let docked = devToolsDockedInWindow.map { CFEqual($0, root) } == true
+                ? [node(devTools, role: "AXWebArea", title: "DevTools", url: "devtools://devtools/bundled/devtools_app.html", depth: 2)]
+                : []
+            return inWindow.map { node($0.web, role: "AXWebArea", title: $0.title, url: $0.url, depth: 2) } + docked +
                 inWindow.map { node($0.tab, role: kAXRadioButtonRole, title: tabTitle($0), description: audioToken($0, forDescription: true) ?? "", depth: 1) }
         }
         if let pane = pane(where: \.web, is: root) {
@@ -202,6 +207,35 @@ private final class PaneChrome: ChromeAccessibilityAccessing {
 }
 
 final class PerPaneAudioDiscoveryTests: XCTestCase {
+    func testDockedDevToolsDoesNotStopMutingOrRestoringSplitPanes() throws {
+        let chrome = PaneChrome.quad()
+        chrome.devToolsDockedInWindow = chrome.windowA
+        chrome.panes[0].markerPresent = true
+        let client = ChromePlayerClient(chrome: chrome, readbackTimeout: 0.2)
+        var players = try client.discoverPlayers()
+
+        XCTAssertEqual(players.count, 4)
+        XCTAssertEqual(
+            try client.muteIfCurrentlyMarkedAd(players[0].identity, expectedPlayers: players.map(\.identity), isCancelled: { false }),
+            .mutedAndVerified
+        )
+        chrome.panes[0].markerPresent = false
+        players = try client.discoverPlayers()
+        XCTAssertEqual(
+            try client.unmuteIfAdMarkerAbsent(players[0].identity, expectedPlayers: players.map(\.identity), isCancelled: { false }),
+            .unmutedAndVerified
+        )
+        XCTAssertEqual(chrome.pressedPanes, [0, 0])
+    }
+
+    func testDockedDevToolsKeepsUnsupportedPeerSplitBindable() throws {
+        let chrome = PaneChrome.splitWithUnsupportedPeer(supportedSide: "Left view", audio: .playing)
+        chrome.devToolsDockedInWindow = chrome.windowA
+        let players = try ChromePlayerClient(chrome: chrome).discoverPlayers()
+
+        XCTAssertEqual(players.map(\.audio), [.playing])
+    }
+
     func testQuadWithOneAudibleAndThreeSilentPanesReportsEveryPane() throws {
         let chrome = PaneChrome.quad()
         let client = ChromePlayerClient(chrome: chrome)

@@ -281,7 +281,7 @@ final class ChromePlayerClient: PlayerControlling {
         for (index, window) in try chrome.windows().enumerated() {
             if try chrome.isMinimized(window) { continue }
             let nodes = try chrome.inspect(window, maximumNodes: 1_500, maximumDepth: 30, timeout: 5, stopDescending: { $0.role == "AXWebArea" })
-            let webAreas = nodes.filter { $0.role == "AXWebArea" && !$0.hidden }
+            let webAreas = nodes.filter { $0.role == "AXWebArea" && !$0.hidden && !Self.isDockedDevTools($0) }
             guard let topDepth = webAreas.map(\.depth).min() else { continue }
             let visible = webAreas.filter { $0.depth == topDepth }
             let unsupported = visible.filter { node in
@@ -301,6 +301,10 @@ final class ChromePlayerClient: PlayerControlling {
             }
         }
         return result
+    }
+
+    private static func isDockedDevTools(_ node: AccessibilityNode) -> Bool {
+        node.url.flatMap(URL.init(string:))?.scheme == "devtools"
     }
 
     private func retryInvalidRead<T>(_ operation: () throws -> T) throws -> T {
