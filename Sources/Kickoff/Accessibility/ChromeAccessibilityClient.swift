@@ -41,11 +41,10 @@ final class ChromeAccessibilityClient: ChromeAccessibilityAccessing {
         guard AXIsProcessTrusted() else {
             throw AccessibilityFailure("Accessibility permission is missing. Enable Kickoff in System Settings > Privacy & Security > Accessibility.")
         }
-        let matches = NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome")
-        guard matches.count == 1, let chrome = matches.first else {
-            throw ChromeProcessUnavailable(description: "Expected one running Google Chrome process; found \(matches.count).")
+        guard let chromePID = UserChrome.runningPID() else {
+            throw ChromeProcessUnavailable(description: "Google Chrome is not running.")
         }
-        pid = chrome.processIdentifier
+        pid = chromePID
         application = AXUIElementCreateApplication(pid)
         let result = AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 1)
         guard result == .success else {

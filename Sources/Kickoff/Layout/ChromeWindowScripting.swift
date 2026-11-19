@@ -38,48 +38,94 @@ struct ChromeScriptingFailure: Error, CustomStringConvertible, Equatable {
 }
 
 final class ChromeAppleScriptClient: ChromeWindowScripting {
+    private let resolvePID: () -> pid_t?
+
+    init(resolvePID: @escaping () -> pid_t? = UserChrome.runningPID) {
+        self.resolvePID = resolvePID
+    }
+
     func makeWindow(bounds: CGRect) throws -> String {
-        let edges = [bounds.minX, bounds.minY, bounds.maxX, bounds.maxY].map { String(Int($0.rounded())) }
-        let result = try run("""
-        set createdWindow to make new window with properties {bounds:{\(edges.joined(separator: ", "))}}
-        return id of createdWindow as text
-        """)
-        guard let id = result.stringValue, !id.isEmpty else {
+        let edges = NSAppleEventDescriptor.list()
+        for (index, edge) in [bounds.minX, bounds.minY, bounds.maxX, bounds.maxY].enumerated() {
+            edges.insert(NSAppleEventDescriptor(int32: Int32(edge.rounded())), at: index + 1)
+        }
+        let properties = NSAppleEventDescriptor.record()
+        properties.setDescriptor(edges, forKeyword: FourCharCode("pbnd"))
+
+        let make = try event("core", "crel")
+        make.setParam(NSAppleEventDescriptor(typeCode: FourCharCode("cwin")), forKeyword: FourCharCode("kocl"))
+        make.setParam(properties, forKeyword: FourCharCode("prdt"))
+        guard let window = try send(make).paramDescriptor(forKeyword: keyDirectObject) else {
+            throw ChromeScriptingFailure(kind: .other(0), description: "Google Chrome did not return the window it created.")
+        }
+
+        let get = try event("core", "getd")
+        get.setParam(
+            Self.specifier(want: "prop", form: "prop", key: NSAppleEventDescriptor(typeCode: FourCharCode("ID  ")), container: window),
+            forKeyword: keyDirectObject
+        )
+        guard let id = try send(get).paramDescriptor(forKeyword: keyDirectObject)?.stringValue, !id.isEmpty else {
             throw ChromeScriptingFailure(kind: .other(0), description: "Google Chrome created a window but did not report its id.")
         }
         return id
     }
 
     func closeWindow(id: String) throws {
-        guard id.allSatisfy(\.isNumber) else {
+        guard let numericID = Int32(id) else {
             throw ChromeScriptingFailure(kind: .other(0), description: "Chrome window id \(id) is not numeric.")
         }
-        _ = try run("close (every window whose id is \(id))")
+        let close = try event("core", "clos")
+        close.setParam(
+            Self.specifier(want: "cwin", form: "ID  ", key: NSAppleEventDescriptor(int32: numericID), container: .null()),
+            forKeyword: keyDirectObject
+        )
+        _ = try send(close)
     }
 
-    private func run(_ body: String) throws -> NSAppleEventDescriptor {
-        let source = """
-        with timeout of 10 seconds
-            tell application id "com.google.Chrome"
-                \(body)
-            end tell
-        end timeout
-        """
-        let execute = { () throws -> NSAppleEventDescriptor in
-            guard let script = NSAppleScript(source: source) else {
-                throw ChromeScriptingFailure(kind: .other(0), description: "Kickoff could not prepare its Chrome request.")
-            }
-            var error: NSDictionary?
-            let result = script.executeAndReturnError(&error)
-            if let error {
-                throw ChromeScriptingFailure.from(
-                    errorNumber: error[NSAppleScript.errorNumber] as? Int ?? 0,
-                    message: error[NSAppleScript.errorMessage] as? String ?? "unknown error"
-                )
-            }
-            return result
+    private func event(_ eventClass: String, _ eventID: String) throws -> NSAppleEventDescriptor {
+        guard let pid = resolvePID() else {
+            throw ChromeScriptingFailure(kind: .notReady, description: "Google Chrome is not running.")
         }
-        if Thread.isMainThread { return try execute() }
-        return try DispatchQueue.main.sync(execute: execute)
+        return NSAppleEventDescriptor(
+            eventClass: FourCharCode(eventClass),
+            eventID: FourCharCode(eventID),
+            targetDescriptor: NSAppleEventDescriptor(processIdentifier: pid),
+            returnID: AEReturnID(kAutoGenerateReturnID),
+            transactionID: AETransactionID(kAnyTransactionID)
+        )
+    }
+
+    private func send(_ event: NSAppleEventDescriptor) throws -> NSAppleEventDescriptor {
+        let reply: NSAppleEventDescriptor
+        do {
+            reply = try event.sendEvent(options: [.waitForReply], timeout: 10)
+        } catch let error as NSError {
+            throw ChromeScriptingFailure.from(errorNumber: error.code, message: error.localizedDescription)
+        }
+        if let number = reply.paramDescriptor(forKeyword: keyErrorNumber)?.int32Value, number != 0 {
+            let message = reply.paramDescriptor(forKeyword: keyErrorString)?.stringValue ?? "unknown error"
+            throw ChromeScriptingFailure.from(errorNumber: Int(number), message: message)
+        }
+        return reply
+    }
+
+    private static func specifier(
+        want: String,
+        form: String,
+        key: NSAppleEventDescriptor,
+        container: NSAppleEventDescriptor
+    ) -> NSAppleEventDescriptor {
+        let record = NSAppleEventDescriptor.record()
+        record.setDescriptor(NSAppleEventDescriptor(typeCode: FourCharCode(want)), forKeyword: FourCharCode("want"))
+        record.setDescriptor(NSAppleEventDescriptor(enumCode: FourCharCode(form)), forKeyword: FourCharCode("form"))
+        record.setDescriptor(key, forKeyword: FourCharCode("seld"))
+        record.setDescriptor(container, forKeyword: FourCharCode("from"))
+        return record.coerce(toDescriptorType: FourCharCode("obj ")) ?? record
+    }
+}
+
+private extension FourCharCode {
+    init(_ code: String) {
+        self = code.utf8.reduce(0) { $0 << 8 | FourCharCode($1) }
     }
 }

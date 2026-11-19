@@ -73,15 +73,15 @@ final class ChromeSetupTests: XCTestCase {
 
     func testInstalledChromeIsOpenedBeforeSetupNeedsIt() throws {
         let url = URL(fileURLWithPath: "/Applications/Google Chrome.app")
-        var runningCount = 0
+        var running = false
         var openedURL: URL?
 
         try ChromeApplication.ensureRunning(
-            runningCount: { runningCount },
+            userChromeIsRunning: { running },
             installedURL: { url },
             open: { requestedURL, completion in
                 openedURL = requestedURL
-                runningCount = 1
+                running = true
                 completion(.success(()))
             }
         )
@@ -91,7 +91,7 @@ final class ChromeSetupTests: XCTestCase {
 
     func testRunningChromeIsReusedWithoutOpeningIt() throws {
         try ChromeApplication.ensureRunning(
-            runningCount: { 1 },
+            userChromeIsRunning: { true },
             installedURL: { XCTFail("Chrome should not be looked up again"); return nil },
             open: { _, _ in XCTFail("Chrome should not be opened again") }
         )
@@ -99,7 +99,7 @@ final class ChromeSetupTests: XCTestCase {
 
     func testSetupExplainsWhenChromeIsNotInstalled() {
         XCTAssertThrowsError(try ChromeApplication.ensureRunning(
-            runningCount: { 0 },
+            userChromeIsRunning: { false },
             installedURL: { nil },
             open: { _, _ in XCTFail("No app should be opened") }
         )) { error in
@@ -109,7 +109,7 @@ final class ChromeSetupTests: XCTestCase {
 
     func testSetupReportsChromeLaunchFailure() {
         XCTAssertThrowsError(try ChromeApplication.ensureRunning(
-            runningCount: { 0 },
+            userChromeIsRunning: { false },
             installedURL: { URL(fileURLWithPath: "/Applications/Google Chrome.app") },
             open: { _, completion in
                 completion(.failure(NSError(domain: NSCocoaErrorDomain, code: NSFileNoSuchFileError)))
@@ -117,14 +117,6 @@ final class ChromeSetupTests: XCTestCase {
         )) { error in
             XCTAssertTrue(String(describing: error).hasPrefix("Could not open Google Chrome:"))
         }
-    }
-
-    func testSetupDoesNotLaunchWhenMultipleChromeProcessesArePresent() {
-        XCTAssertThrowsError(try ChromeApplication.ensureRunning(
-            runningCount: { 2 },
-            installedURL: { XCTFail("No app should be looked up"); return nil },
-            open: { _, _ in XCTFail("No app should be opened") }
-        ))
     }
 
     func testQuadFramesUseMeasuredUnequalBrowserInsetsAndOverlapBottomChrome() throws {

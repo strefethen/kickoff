@@ -195,17 +195,17 @@ final class ChromeSetup {
     }
 }
 
-/// Starts an installed Chrome only when setup needs a new browser window.
+/// Starts the user's Chrome only when setup needs a new browser window.
 enum ChromeApplication {
     static func ensureRunning(
-        runningCount: () -> Int = {
-            NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome").count
-        },
+        userChromeIsRunning: () -> Bool = { UserChrome.runningPID() != nil },
         installedURL: () -> URL? = {
-            NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome")
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: UserChrome.bundleIdentifier)
         },
         open: (URL, @escaping (Result<Void, Error>) -> Void) -> Void = { url, completion in
-            NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { app, error in
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.createsNewApplicationInstance = true
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, error in
                 if let error {
                     completion(.failure(error))
                 } else if app != nil {
@@ -214,13 +214,10 @@ enum ChromeApplication {
                     completion(.failure(AccessibilityFailure("macOS did not start Google Chrome.")))
                 }
             }
-        }
+        },
+        launchTimeout: TimeInterval = 10
     ) throws {
-        let count = runningCount()
-        guard count <= 1 else {
-            throw AccessibilityFailure("Expected one running Google Chrome process; found \(count).")
-        }
-        if count == 1 { return }
+        if userChromeIsRunning() { return }
         guard let url = installedURL() else {
             throw AccessibilityFailure("Google Chrome is not installed.")
         }
@@ -231,8 +228,8 @@ enum ChromeApplication {
             launchResult = result
             completed.signal()
         }
-        guard completed.wait(timeout: .now() + 5) == .success else {
-            throw AccessibilityFailure("Google Chrome did not start within 5 seconds.")
+        guard completed.wait(timeout: .now() + launchTimeout) == .success else {
+            throw AccessibilityFailure("Google Chrome did not start within \(Int(launchTimeout)) seconds.")
         }
         guard let launchResult else {
             throw AccessibilityFailure("macOS did not report whether Google Chrome started.")
@@ -243,15 +240,11 @@ enum ChromeApplication {
             throw AccessibilityFailure("Could not open Google Chrome: \(error.localizedDescription)")
         }
 
-        let deadline = Date().addingTimeInterval(2)
+        let deadline = Date().addingTimeInterval(launchTimeout)
         repeat {
-            let count = runningCount()
-            if count == 1 { return }
-            if count > 1 {
-                throw AccessibilityFailure("Expected one running Google Chrome process; found \(count).")
-            }
+            if userChromeIsRunning() { return }
             Thread.sleep(forTimeInterval: 0.1)
         } while Date() < deadline
-        throw AccessibilityFailure("Google Chrome started but did not appear as one running process.")
+        throw AccessibilityFailure("Google Chrome started but never became ready.")
     }
 }
