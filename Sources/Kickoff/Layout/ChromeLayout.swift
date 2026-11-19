@@ -102,6 +102,7 @@ final class ChromeLayout {
         _ = try target.validate()
         let requestedFrame = frame ?? target.monitor.visibleBounds.insetBy(dx: 24, dy: 24)
         let before = try readyWindows()
+        let windowServerBefore = Self.windowServerFrames(pid: chrome.pid)
         let scriptID = try requestWindow(at: requestedFrame)
         log(["event": "window-requested", "chromeWindowID": scriptID, "frame": NSStringFromRect(requestedFrame)])
         let window: AXUIElement
@@ -111,7 +112,8 @@ final class ChromeLayout {
             log([
                 "event": "window-pairing-failed",
                 "chromeWindowID": scriptID,
-                "accessibilityWindows": (try? chrome.windows().map { NSStringFromRect(try rect($0)) }) ?? [],
+                "accessibilityWindows": (try? chrome.windows().map { NSStringFromRect(try rect($0)) }) ?? ["unreadable"],
+                "windowServerWindowsBefore": windowServerBefore,
                 "windowServerWindows": Self.windowServerFrames(pid: chrome.pid),
             ])
             do {
@@ -130,15 +132,19 @@ final class ChromeLayout {
     }
 
     static func windowServerFrames(pid: pid_t) -> [String] {
-        let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
-        return windows.compactMap { info in
+        windowServerFrames(pid: pid, in: CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? [])
+    }
+
+    static func windowServerFrames(pid: pid_t, in windows: [[String: Any]]) -> [String] {
+        windows.compactMap { info in
             guard info[kCGWindowOwnerPID as String] as? pid_t == pid,
                   info[kCGWindowLayer as String] as? Int == 0,
                   let bounds = info[kCGWindowBounds as String] as? NSDictionary,
                   let frame = CGRect(dictionaryRepresentation: bounds),
                   frame.width >= 200, frame.height >= 200 else { return nil }
             let onscreen = info[kCGWindowIsOnscreen as String] as? Bool ?? false
-            return "\(NSStringFromRect(frame)) \(onscreen ? "onscreen" : "offscreen")"
+            let number = info[kCGWindowNumber as String] as? Int ?? 0
+            return "#\(number) \(NSStringFromRect(frame)) \(onscreen ? "onscreen" : "offscreen")"
         }
     }
 

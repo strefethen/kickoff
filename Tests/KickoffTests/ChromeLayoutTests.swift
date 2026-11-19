@@ -419,8 +419,42 @@ final class ChromeLayoutTests: XCTestCase {
         XCTAssertThrowsError(try layout.prepare(frame: expected))
         let failure = try XCTUnwrap(lines.lines.first { $0.contains("window-pairing-failed") })
         XCTAssertTrue(failure.contains("{{2600, 100}, {1200, 900}}"))
-        XCTAssertTrue(failure.contains("windowServerWindows"))
+        XCTAssertTrue(failure.contains("windowServerWindowsBefore"))
+        XCTAssertTrue(failure.contains("windowServerWindows\""))
         XCTAssertEqual(chrome.closedScriptIDs, ["7001"])
+    }
+
+    func testWindowServerFramesKeepOnlyChromeContentWindowsWithNumbersAndVisibility() {
+        let chromeWindow: [String: Any] = [
+            kCGWindowOwnerPID as String: NSNumber(value: 42), kCGWindowLayer as String: NSNumber(value: 0),
+            kCGWindowNumber as String: NSNumber(value: 9371), kCGWindowIsOnscreen as String: true,
+            kCGWindowBounds as String: CGRect(x: 2700, y: 200, width: 1400, height: 800).dictionaryRepresentation,
+        ]
+        let fullScreenSpace: [String: Any] = [
+            kCGWindowOwnerPID as String: NSNumber(value: 42), kCGWindowLayer as String: NSNumber(value: 0),
+            kCGWindowNumber as String: NSNumber(value: 9400),
+            kCGWindowBounds as String: CGRect(x: -1920, y: 0, width: 1920, height: 1080).dictionaryRepresentation,
+        ]
+        let toolbarStrip: [String: Any] = [
+            kCGWindowOwnerPID as String: NSNumber(value: 42), kCGWindowLayer as String: NSNumber(value: 0),
+            kCGWindowNumber as String: NSNumber(value: 9155),
+            kCGWindowBounds as String: CGRect(x: -1920, y: -41, width: 1920, height: 41).dictionaryRepresentation,
+        ]
+        let otherApp: [String: Any] = [
+            kCGWindowOwnerPID as String: NSNumber(value: 7), kCGWindowLayer as String: NSNumber(value: 0),
+            kCGWindowNumber as String: NSNumber(value: 1),
+            kCGWindowBounds as String: CGRect(x: 0, y: 0, width: 800, height: 600).dictionaryRepresentation,
+        ]
+        let menuLayer: [String: Any] = [
+            kCGWindowOwnerPID as String: NSNumber(value: 42), kCGWindowLayer as String: NSNumber(value: 25),
+            kCGWindowNumber as String: NSNumber(value: 2),
+            kCGWindowBounds as String: CGRect(x: 0, y: 0, width: 800, height: 600).dictionaryRepresentation,
+        ]
+
+        XCTAssertEqual(
+            ChromeLayout.windowServerFrames(pid: 42, in: [chromeWindow, fullScreenSpace, toolbarStrip, otherApp, menuLayer]),
+            ["#9371 {{2700, 200}, {1400, 800}} onscreen", "#9400 {{-1920, 0}, {1920, 1080}} offscreen"]
+        )
     }
 
     func testTwoNewWindowsAtSetupFrameAreNeverGuessedBetween() throws {
