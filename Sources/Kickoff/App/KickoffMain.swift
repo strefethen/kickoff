@@ -84,10 +84,12 @@ struct KickoffMain {
             output = ["websiteURL": try WebsitePreferences().currentURL().absoluteString]
         case "--diagnose-layout" where arguments.count == 1:
             _ = NSApplication.shared
+            let chrome = try ChromeAccessibilityClient()
             let layout = try ChromeLayout(
                 target: MonitorSelection().pinTarget(),
                 website: .approvedDefault,
-                scripting: ChromeAppleScriptClient()
+                chrome: chrome,
+                scripting: ChromeAppleScriptClient(pid: chrome.pid)
             )
             output = try layout.environment()
         case "--setup" where arguments.count == 1,
@@ -97,15 +99,23 @@ struct KickoffMain {
             let website = try WebsitePreferences().currentURL()
             let mode: ChromeSetupMode = arguments[0] == "--setup-quad" ? .quad : .split
             try ChromeSetup(target: target, website: website).setup(mode: mode)
-            output = try ChromeLayout(target: target, website: website, scripting: ChromeAppleScriptClient()).environment()
+            let chrome = try ChromeAccessibilityClient()
+            output = try ChromeLayout(
+                target: target,
+                website: website,
+                chrome: chrome,
+                scripting: ChromeAppleScriptClient(pid: chrome.pid)
+            ).environment()
         case "--prepare" where arguments.count == 1,
              "--split" where arguments.count == 1,
              "--fullscreen" where arguments.count == 1:
             _ = NSApplication.shared
+            let chrome = try ChromeAccessibilityClient()
             let layout = try ChromeLayout(
                 target: MonitorSelection().pinTarget(),
                 website: WebsiteURL.approvedDefault,
-                scripting: ChromeAppleScriptClient()
+                chrome: chrome,
+                scripting: ChromeAppleScriptClient(pid: chrome.pid)
             )
             if arguments[0] == "--prepare" { _ = try layout.prepare() }
             if arguments[0] == "--split" { try layout.split() }

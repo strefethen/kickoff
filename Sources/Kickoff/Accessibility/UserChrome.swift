@@ -34,12 +34,17 @@ enum UserChrome {
         instances
             .filter { !isAutomated($0.arguments ?? []) }
             .min { lhs, rhs in
-                let lhsCustom = usesCustomProfile(lhs.arguments ?? [])
-                let rhsCustom = usesCustomProfile(rhs.arguments ?? [])
-                if lhsCustom != rhsCustom { return !lhsCustom }
+                let lhsRank = preferenceRank(lhs.arguments)
+                let rhsRank = preferenceRank(rhs.arguments)
+                if lhsRank != rhsRank { return lhsRank < rhsRank }
                 return (lhs.launchDate ?? .distantFuture) < (rhs.launchDate ?? .distantFuture)
             }?
             .pid
+    }
+
+    private static func preferenceRank(_ arguments: [String]?) -> Int {
+        guard let arguments else { return 2 }
+        return usesCustomProfile(arguments) ? 1 : 0
     }
 
     static func runningInstances() -> [Instance] {

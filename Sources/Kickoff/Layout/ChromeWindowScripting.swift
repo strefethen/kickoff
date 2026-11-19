@@ -38,10 +38,10 @@ struct ChromeScriptingFailure: Error, CustomStringConvertible, Equatable {
 }
 
 final class ChromeAppleScriptClient: ChromeWindowScripting {
-    private let resolvePID: () -> pid_t?
+    private let pid: pid_t
 
-    init(resolvePID: @escaping () -> pid_t? = UserChrome.runningPID) {
-        self.resolvePID = resolvePID
+    init(pid: pid_t) {
+        self.pid = pid
     }
 
     func makeWindow(bounds: CGRect) throws -> String {
@@ -52,14 +52,14 @@ final class ChromeAppleScriptClient: ChromeWindowScripting {
         let properties = NSAppleEventDescriptor.record()
         properties.setDescriptor(edges, forKeyword: FourCharCode("pbnd"))
 
-        let make = try event("core", "crel")
+        let make = event("core", "crel")
         make.setParam(NSAppleEventDescriptor(typeCode: FourCharCode("cwin")), forKeyword: FourCharCode("kocl"))
         make.setParam(properties, forKeyword: FourCharCode("prdt"))
         guard let window = try send(make).paramDescriptor(forKeyword: keyDirectObject) else {
             throw ChromeScriptingFailure(kind: .other(0), description: "Google Chrome did not return the window it created.")
         }
 
-        let get = try event("core", "getd")
+        let get = event("core", "getd")
         get.setParam(
             Self.specifier(want: "prop", form: "prop", key: NSAppleEventDescriptor(typeCode: FourCharCode("ID  ")), container: window),
             forKeyword: keyDirectObject
@@ -71,22 +71,19 @@ final class ChromeAppleScriptClient: ChromeWindowScripting {
     }
 
     func closeWindow(id: String) throws {
-        guard let numericID = Int32(id) else {
+        guard !id.isEmpty, id.allSatisfy(\.isNumber) else {
             throw ChromeScriptingFailure(kind: .other(0), description: "Chrome window id \(id) is not numeric.")
         }
-        let close = try event("core", "clos")
+        let close = event("core", "clos")
         close.setParam(
-            Self.specifier(want: "cwin", form: "ID  ", key: NSAppleEventDescriptor(int32: numericID), container: .null()),
+            Self.specifier(want: "cwin", form: "ID  ", key: NSAppleEventDescriptor(string: id), container: .null()),
             forKeyword: keyDirectObject
         )
         _ = try send(close)
     }
 
-    private func event(_ eventClass: String, _ eventID: String) throws -> NSAppleEventDescriptor {
-        guard let pid = resolvePID() else {
-            throw ChromeScriptingFailure(kind: .notReady, description: "Google Chrome is not running.")
-        }
-        return NSAppleEventDescriptor(
+    private func event(_ eventClass: String, _ eventID: String) -> NSAppleEventDescriptor {
+        NSAppleEventDescriptor(
             eventClass: FourCharCode(eventClass),
             eventID: FourCharCode(eventID),
             targetDescriptor: NSAppleEventDescriptor(processIdentifier: pid),

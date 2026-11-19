@@ -39,6 +39,14 @@ final class UserChromeTests: XCTestCase {
         XCTAssertEqual(UserChrome.choose(instances), 1)
     }
 
+    func testInstanceWithUnreadableArgumentsRanksBelowKnownUserChrome() {
+        let instances = [
+            UserChrome.Instance(pid: 1, launchDate: Date(timeIntervalSince1970: 1), arguments: nil),
+            UserChrome.Instance(pid: 2, launchDate: Date(timeIntervalSince1970: 2), arguments: userArguments),
+        ]
+        XCTAssertEqual(UserChrome.choose(instances), 2)
+    }
+
     func testRemoteDebuggingPortWithValueCountsAsAutomation() {
         XCTAssertTrue(UserChrome.isAutomated(userArguments + ["--remote-debugging-port=9222"]))
         XCTAssertFalse(UserChrome.isAutomated(userArguments))
