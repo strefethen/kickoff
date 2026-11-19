@@ -6,6 +6,10 @@ protocol ChromeWindowScripting: AnyObject {
     func closeWindow(id: String) throws
 }
 
+struct ChromeWindowLeftOpen: Error, CustomStringConvertible, Equatable {
+    let description: String
+}
+
 struct ChromeScriptingFailure: Error, CustomStringConvertible, Equatable {
     enum Kind: Equatable {
         case notPermitted
@@ -64,10 +68,21 @@ final class ChromeAppleScriptClient: ChromeWindowScripting {
             Self.specifier(want: "prop", form: "prop", key: NSAppleEventDescriptor(typeCode: FourCharCode("ID  ")), container: window),
             forKeyword: keyDirectObject
         )
-        guard let id = try send(get).paramDescriptor(forKeyword: keyDirectObject)?.stringValue, !id.isEmpty else {
-            throw ChromeScriptingFailure(kind: .other(0), description: "Google Chrome created a window but did not report its id.")
+        do {
+            guard let id = try send(get).paramDescriptor(forKeyword: keyDirectObject)?.stringValue, !id.isEmpty else {
+                throw ChromeScriptingFailure(kind: .other(0), description: "Google Chrome created a window but did not report its id.")
+            }
+            return id
+        } catch {
+            let close = event("core", "clos")
+            close.setParam(window, forKeyword: keyDirectObject)
+            do {
+                _ = try send(close)
+            } catch let closeError {
+                throw ChromeWindowLeftOpen(description: "\(error) Kickoff also could not close that window: \(closeError)")
+            }
+            throw error
         }
-        return id
     }
 
     func closeWindow(id: String) throws {

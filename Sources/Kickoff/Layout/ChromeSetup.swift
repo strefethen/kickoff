@@ -30,6 +30,19 @@ protocol ChromeWindowSettingUp: AnyObject {
 
 extension ChromeLayout: ChromeWindowSettingUp {}
 
+struct SetupStepFailure: Error, CustomStringConvertible {
+    let step: String
+    let cause: Error
+
+    var description: String { "\(step): \(cause)" }
+
+    static func rootCause(of error: Error) -> Error {
+        var current = error
+        while let step = current as? SetupStepFailure { current = step.cause }
+        return current
+    }
+}
+
 struct ChromeSetupFailure: Error, CustomStringConvertible {
     let cause: Error
     let unclosedWindows: Int
@@ -106,6 +119,7 @@ final class ChromeSetup {
     }
 
     static func isRetryable(_ error: Error) -> Bool {
+        let error = SetupStepFailure.rootCause(of: error)
         if let scripting = error as? ChromeScriptingFailure {
             return scripting.kind != .notPermitted && scripting.kind != .timedOut
         }
@@ -134,7 +148,7 @@ final class ChromeSetup {
         } catch {
             log.record("setup-failed mode=\(mode) attempt=\(attempt) error=\(String(describing: error).replacingOccurrences(of: "\n", with: " "))")
             var closedWindows = 0
-            var unclosedWindows = 0
+            var unclosedWindows = SetupStepFailure.rootCause(of: error) is ChromeWindowLeftOpen ? 1 : 0
             for created in sessions.reversed() {
                 do {
                     if try created.closeOwnedWindow() { closedWindows += 1 }

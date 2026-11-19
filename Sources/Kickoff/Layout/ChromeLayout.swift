@@ -113,7 +113,7 @@ final class ChromeLayout {
                 try scripting.closeWindow(id: scriptID)
                 log(["event": "close-requested-window", "chromeWindowID": scriptID])
             } catch let closeError {
-                throw AccessibilityFailure("\(error) Kickoff also could not close the window it requested: \(closeError)")
+                throw ChromeWindowLeftOpen(description: "\(error) Kickoff also could not close the window it requested: \(closeError)")
             }
             throw AccessibilityFailure("\(error) Kickoff closed the window it requested.")
         }
@@ -698,7 +698,7 @@ final class ChromeLayout {
         do { try action() }
         catch {
             log(["event": "setup-step-failed", "step": name, "error": String(describing: error)])
-            throw AccessibilityFailure("\(name): \(error)")
+            throw SetupStepFailure(step: name, cause: error)
         }
     }
 }

@@ -72,8 +72,11 @@ final class ChromeLayoutTests: XCTestCase {
             return "7001"
         }
 
+        var closeFailure: Error?
+
         func closeWindow(id: String) throws {
             closedScriptIDs.append(id)
+            if let closeFailure { throw closeFailure }
         }
 
         func attribute(_ element: AXUIElement, _ name: String) throws -> CFTypeRef? {
@@ -292,6 +295,32 @@ final class ChromeLayoutTests: XCTestCase {
         XCTAssertEqual(chrome.closedScriptIDs, ["7001"])
         XCTAssertFalse(try layout.closeOwnedWindow())
         XCTAssertEqual(chrome.setAttributes, [])
+    }
+
+    func testAutomationDenialSurvivesStepWrappingAndIsNotRetryable() throws {
+        let chrome = FakeChrome()
+        chrome.scriptFailures = [.from(errorNumber: -1743, message: "denied")]
+        chrome.windowReads = [[]]
+        let (layout, _) = try makeLayout(chrome: chrome)
+
+        XCTAssertThrowsError(try layout.setupSingleWindow()) { error in
+            XCTAssertTrue(error is SetupStepFailure)
+            XCTAssertEqual((SetupStepFailure.rootCause(of: error) as? ChromeScriptingFailure)?.kind, .notPermitted)
+            XCTAssertFalse(ChromeSetup.isRetryable(error))
+        }
+    }
+
+    func testRequestedWindowThatCannotBeClosedIsReportedAsLeftOpen() throws {
+        let chrome = FakeChrome()
+        let expected = CGRect(x: 0, y: 25, width: 1920, height: 527)
+        chrome.windowReads = [[], [chrome.window]]
+        chrome.frameReads = [CGRect(x: 2600, y: 100, width: 1200, height: 900)]
+        chrome.closeFailure = ChromeScriptingFailure.from(errorNumber: -1728, message: "no such window")
+        let (layout, _) = try makeLayout(chrome: chrome, timeout: 1)
+
+        XCTAssertThrowsError(try layout.prepare(frame: expected)) { error in
+            XCTAssertTrue(error is ChromeWindowLeftOpen)
+        }
     }
 
     func testTwoNewWindowsAtSetupFrameAreNeverGuessedBetween() throws {

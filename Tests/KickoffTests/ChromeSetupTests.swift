@@ -340,7 +340,8 @@ final class ChromeSetupTests: XCTestCase {
         }
 
         XCTAssertThrowsError(try setup.setup(mode: .split)) { error in
-            XCTAssertFalse(String(describing: error).contains("Kickoff closed"))
+            XCTAssertEqual((error as? ChromeSetupFailure)?.unclosedWindows, 0)
+            XCTAssertEqual(String(describing: error), String(describing: StubError.setup))
         }
     }
 
@@ -386,13 +387,16 @@ final class ChromeSetupTests: XCTestCase {
             if id == 2 { session.splitError = StubError.setup }
         }
         try setup.setup(mode: .quad)
-        XCTAssertTrue(events().contains("close:2"))
-        XCTAssertTrue(events().contains("close:1"))
-        XCTAssertFalse(events().contains("close:3"))
+        let log = events()
+        let secondAttemptStart = try XCTUnwrap(log.firstIndex { $0.hasPrefix("split:3") })
+        XCTAssertEqual(log.firstIndex(of: "close:2").map { $0 < secondAttemptStart }, true)
+        XCTAssertEqual(log.firstIndex(of: "close:1").map { $0 < secondAttemptStart }, true)
+        XCTAssertFalse(log.contains("close:3"))
     }
 
     func testRetriesStopAfterMaxAttemptsWithTheLastCause() {
-        let (setup, events, sleeps) = retryingSetup() { id, session in
+        let log = FakeLog()
+        let (setup, events, sleeps) = retryingSetup(log: log) { id, session in
             session.setupError = id == 3 ? StubError.verify : StubError.setup
         }
         XCTAssertThrowsError(try setup.setup(mode: .split)) { error in
@@ -400,6 +404,10 @@ final class ChromeSetupTests: XCTestCase {
         }
         XCTAssertEqual(events().filter { $0.hasPrefix("setup:") }.count, 3)
         XCTAssertEqual(sleeps(), 2)
+        for attempt in 1...3 {
+            XCTAssertTrue(log.lines.contains { $0.hasPrefix("setup-failed mode=split attempt=\(attempt) ") })
+        }
+        XCTAssertEqual(log.lines.filter { $0.hasPrefix("setup-cleanup ") }.count, 3)
     }
 
     func testNoRetryWhenAWindowCouldNotBeClosed() {
@@ -411,11 +419,27 @@ final class ChromeSetupTests: XCTestCase {
         XCTAssertEqual(events().filter { $0.hasPrefix("setup:") }.count, 1)
     }
 
+    func testRequestedWindowLeftOpenStopsRetriesAndIsReported() {
+        let (setup, events, _) = retryingSetup() { _, session in
+            session.ownsWindow = false
+            session.setupError = SetupStepFailure(
+                step: "Create window on Test Display",
+                cause: ChromeWindowLeftOpen(description: "Chrome did not open the requested window.")
+            )
+        }
+        XCTAssertThrowsError(try setup.setup(mode: .split)) { error in
+            XCTAssertEqual((error as? ChromeSetupFailure)?.unclosedWindows, 1)
+            XCTAssertTrue(String(describing: error).hasSuffix("One Chrome window Kickoff opened could not be closed."))
+        }
+        XCTAssertEqual(events().filter { $0.hasPrefix("setup:") }.count, 1)
+    }
+
     func testNoRetryForPermissionProblems() {
         let permissionErrors: [Error] = [
             ChromeScriptingFailure.from(errorNumber: -1743, message: ""),
             ChromeScriptingFailure.from(errorNumber: -1712, message: ""),
             AccessibilityFailure("Accessibility permission is missing.", axError: .apiDisabled),
+            SetupStepFailure(step: "Create window", cause: ChromeScriptingFailure.from(errorNumber: -1743, message: "")),
         ]
         for permissionError in permissionErrors {
             let (setup, events, _) = retryingSetup() { _, session in

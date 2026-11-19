@@ -39,7 +39,7 @@ final class ChromeAccessibilityClient: ChromeAccessibilityAccessing {
 
     init() throws {
         guard AXIsProcessTrusted() else {
-            throw AccessibilityFailure("Accessibility permission is missing. Enable Kickoff in System Settings > Privacy & Security > Accessibility.")
+            throw AccessibilityFailure("Accessibility permission is missing. Enable Kickoff in System Settings > Privacy & Security > Accessibility.", axError: .apiDisabled)
         }
         guard let chromePID = UserChrome.runningPID() else {
             throw ChromeProcessUnavailable(description: "Google Chrome is not running.")
