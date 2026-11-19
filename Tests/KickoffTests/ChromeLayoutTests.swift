@@ -374,6 +374,24 @@ final class ChromeLayoutTests: XCTestCase {
         }
     }
 
+    func testPaneOnAForeignHostIsStillReportedAsARedirect() throws {
+        let chrome = FakeChrome()
+        let expected = CGRect(x: 0, y: 25, width: 1920, height: 1055)
+        chrome.windowReads = [[], [chrome.window]]
+        chrome.frameReads = [expected]
+        chrome.inspectedNodes = [
+            pageNode(chrome.leftPage),
+            node(chrome.rightPage, role: "AXWebArea", url: "https://auth.example.net/login", depth: 1),
+        ]
+        let (layout, _) = try makeLayout(chrome: chrome, ownsWindow: false)
+
+        try layout.prepare(frame: expected)
+        XCTAssertThrowsError(try layout.browseActiveWebsite(expectedPages: 2)) { error in
+            XCTAssertTrue(String(describing: error).hasPrefix("The configured website redirected"))
+            XCTAssertTrue(String(describing: error).contains("auth.example.net"))
+        }
+    }
+
     func testWebsiteIsNeverLoadedIntoAWindowWithoutKickoffsScriptID() throws {
         let chrome = FakeChrome()
         chrome.inspectedNodes = [pageNode(chrome.leftPage)]
