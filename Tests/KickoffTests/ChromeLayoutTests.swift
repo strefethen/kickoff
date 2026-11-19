@@ -391,6 +391,38 @@ final class ChromeLayoutTests: XCTestCase {
         }
     }
 
+    func testPairingFailureRecordsWhereChromeWindowsActuallyAre() throws {
+        final class Lines: SetupLogging {
+            let location = "/logs/setup.log"
+            let writeFailure: String? = nil
+            private(set) var lines: [String] = []
+            func record(_ line: String) { lines.append(line) }
+        }
+        let chrome = FakeChrome()
+        let expected = CGRect(x: 0, y: 25, width: 1920, height: 527)
+        chrome.windowReads = [[], [chrome.window]]
+        chrome.frameReads = [CGRect(x: 2600, y: 100, width: 1200, height: 900)]
+        let monitor = makeMonitor(bounds: bounds)
+        let clock = FakeClock()
+        let lines = Lines()
+        let layout = try ChromeLayout(
+            target: MonitorTarget(monitor: monitor, discover: { [monitor] }),
+            website: .approvedDefault,
+            chrome: chrome,
+            now: { clock.current },
+            sleep: clock.sleep,
+            windowStateTimeout: 1,
+            setupLog: lines,
+            scripting: chrome
+        )
+
+        XCTAssertThrowsError(try layout.prepare(frame: expected))
+        let failure = try XCTUnwrap(lines.lines.first { $0.contains("window-pairing-failed") })
+        XCTAssertTrue(failure.contains("{{2600, 100}, {1200, 900}}"))
+        XCTAssertTrue(failure.contains("windowServerWindows"))
+        XCTAssertEqual(chrome.closedScriptIDs, ["7001"])
+    }
+
     func testTwoNewWindowsAtSetupFrameAreNeverGuessedBetween() throws {
         let chrome = FakeChrome()
         let expected = CGRect(x: 0, y: 25, width: 1920, height: 527)
