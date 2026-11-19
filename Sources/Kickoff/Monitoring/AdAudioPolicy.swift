@@ -1,7 +1,7 @@
 import Foundation
 
 /// Per-monitor-run ownership of tabs muted by this run. Claims never survive a
-/// stop, restart, cancellation, setup, quit, or terminal error. A lease may
+/// stop, restart, cancellation, setup, or quit. A lease may
 /// outlive a temporary gap in supported-player discovery, but cannot act then.
 final class AdAudioPolicy {
     private struct Lease {
@@ -12,6 +12,10 @@ final class AdAudioPolicy {
 
     func claimAfterVerifiedMute(_ identity: PlayerIdentity) {
         leases[identity.token] = Lease()
+    }
+
+    func claimAfterUncertainMute(_ identity: PlayerIdentity) {
+        if leases[identity.token] == nil { leases[identity.token] = Lease() }
     }
 
     func restoreCandidates(afterCompleteScan players: [PlayerState]) -> [PlayerIdentity] {

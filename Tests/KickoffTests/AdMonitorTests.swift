@@ -14,6 +14,9 @@ private final class FakePlayerClient: PlayerControlling {
     private(set) var unmuteCalls: [UUID] = []
     private(set) var discoveryCount = 0
     var unmuteOutcomes: [UUID: Result<UnmuteAfterAdOutcome, Error>] = [:]
+    var unmuteErrorsRemaining = 0
+    var muteErrorsRemaining = 0
+    var actionError: Error = FakeFailure.mutationOrReadback
 
     init(players: [PlayerState]) {
         self.players = players
@@ -27,7 +30,10 @@ private final class FakePlayerClient: PlayerControlling {
         if isCancelled() { throw MonitoringCancelled() }
         lock.lock()
         unmuteCalls.append(player.token)
+        let fails = unmuteErrorsRemaining > 0
+        if fails { unmuteErrorsRemaining -= 1 }
         lock.unlock()
+        if fails { throw actionError }
         return try unmuteOutcomes[player.token, default: .success(.unmutedAndVerified)].get()
     }
 
@@ -50,7 +56,10 @@ private final class FakePlayerClient: PlayerControlling {
         if isCancelled() { throw MonitoringCancelled() }
         lock.lock()
         muteCalls.append(player.token)
+        let fails = muteErrorsRemaining > 0
+        if fails { muteErrorsRemaining -= 1 }
         lock.unlock()
+        if fails { throw actionError }
         return try outcomes[player.token, default: .success(.mutedAndVerified)].get()
     }
 
@@ -158,13 +167,77 @@ final class AdMonitorTests: XCTestCase {
         XCTAssertEqual(monitor.status, .stopped)
     }
 
-    func testMutationOrReadbackFailureStopsMonitoring() {
+    func testMutationFailureRecoversWithSameClientAndRestoresTheUncertainMute() {
         let ad = player("https://www.hulu.com/watch/ad", marked: true)
+        let mutedAd = PlayerState(identity: ad.identity, windowIndex: 0, audio: .muted, hasAdMarker: true)
+        let game = PlayerState(identity: ad.identity, windowIndex: 0, audio: .muted, hasAdMarker: false)
         let fake = FakePlayerClient(players: [ad])
-        fake.outcomes[ad.identity.token] = .failure(FakeFailure.mutationOrReadback)
-        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 60) { fake }
-        awaitStatus({ if case .failed = $0 { return true }; return false }, monitor: monitor) { monitor.start() }
-        XCTAssertFalse(monitor.isRunning)
+        fake.discoveries = [[ad], [mutedAd], [game], [game], [game]]
+        fake.muteErrorsRemaining = 1
+        var factories = 0
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01,
+                                discoveryRetryInterval: 0.01) { factories += 1; return fake }
+        let restored = expectation(description: "uncertain mute restored")
+        var sawRecovering = false
+        monitor.onStatusChange = { status in
+            if case .recovering = status {
+                sawRecovering = true
+                XCTAssertTrue(monitor.isRunning)
+            }
+            if status == .monitoring(players: 1, newlyMuted: 0, newlyUnmuted: 1) { restored.fulfill() }
+        }
+        monitor.start()
+        wait(for: [restored], timeout: 2)
+        monitor.stopAndDrain()
+        XCTAssertTrue(sawRecovering)
+        XCTAssertEqual(factories, 1)
+        XCTAssertEqual(fake.calls(), [ad.identity.token])
+        XCTAssertEqual(fake.restoreCalls(), [ad.identity.token])
+    }
+
+    func testFailedMuteOfTabThatKeptPlayingIsNotLaterUnmuted() {
+        let ad = player("https://www.hulu.com/watch/ad", marked: true)
+        let gameSameIdentity = PlayerState(identity: ad.identity, windowIndex: 0, audio: .playing, hasAdMarker: false)
+        let fake = FakePlayerClient(players: [ad])
+        fake.discoveries = [[ad], [gameSameIdentity], [gameSameIdentity], [gameSameIdentity]]
+        fake.muteErrorsRemaining = 1
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01,
+                                discoveryRetryInterval: 0.01) { fake }
+        let scanned = expectation(description: "several complete scans")
+        scanned.assertForOverFulfill = false
+        monitor.onStatusChange = { _ in if fake.discoveryCount >= 4 { scanned.fulfill() } }
+        monitor.start()
+        wait(for: [scanned], timeout: 2)
+        monitor.stopAndDrain()
+        XCTAssertTrue(fake.restoreCalls().isEmpty)
+    }
+
+    func testFailedUnmuteKeepsItsLeaseAndIsRetried() {
+        let ad = player("https://www.hulu.com/watch/ad", marked: true)
+        let game = PlayerState(identity: ad.identity, windowIndex: 0, audio: .muted, hasAdMarker: false)
+        let fake = FakePlayerClient(players: [ad])
+        fake.discoveries = [[ad], [game]]
+        fake.unmuteErrorsRemaining = 1
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01,
+                                discoveryRetryInterval: 0.01) { fake }
+        awaitStatus({ $0 == .monitoring(players: 1, newlyMuted: 0, newlyUnmuted: 1) }, monitor: monitor) { monitor.start() }
+        XCTAssertEqual(fake.restoreCalls(), [ad.identity.token, ad.identity.token])
+    }
+
+    func testChromeExitDuringActionRebuildsTheClient() {
+        let ad = player("https://www.hulu.com/watch/ad", marked: true)
+        let first = FakePlayerClient(players: [ad])
+        first.muteErrorsRemaining = 1
+        first.actionError = ChromeProcessUnavailable(description: "Chrome exited")
+        let second = FakePlayerClient(players: [])
+        var factories = 0
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01,
+                                discoveryRetryInterval: 0.01) {
+            factories += 1
+            return factories == 1 ? first : second
+        }
+        awaitStatus({ $0 == .waitingForPlayers }, monitor: monitor) { monitor.start() }
+        XCTAssertEqual(factories, 2)
     }
 
     func testStopThenRestartIgnoresStalePassAndSerializesWork() {
@@ -699,14 +772,15 @@ final class AdMonitorTests: XCTestCase {
         XCTAssertEqual(factories, 2)
     }
 
-    func testUnavailableErrorFromMutationIsTerminalAndNeverRetried() {
+    func testUnavailableErrorFromMutationRecoversAndRetries() {
         let ad = player("https://www.hulu.com/watch/ad", marked: true)
         let fake = FakePlayerClient(players: [ad])
-        fake.outcomes[ad.identity.token] = .failure(ChromeAudioControlsUnavailable(description: "action lost control"))
-        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01) { fake }
-        awaitStatus({ if case .failed = $0 { return true }; return false }, monitor: monitor) { monitor.start() }
-        XCTAssertEqual(fake.discoveryCount, 1)
-        XCTAssertEqual(fake.calls(), [ad.identity.token])
+        fake.muteErrorsRemaining = 1
+        fake.actionError = ChromeAudioControlsUnavailable(description: "action lost control")
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01,
+                                discoveryRetryInterval: 0.01) { fake }
+        awaitStatus({ $0 == .monitoring(players: 1, newlyMuted: 1, newlyUnmuted: 0) }, monitor: monitor) { monitor.start() }
+        XCTAssertEqual(fake.calls(), [ad.identity.token, ad.identity.token])
     }
 
     func testProductionPeacockClientRecoversThenMutesAndRestoresOnce() {

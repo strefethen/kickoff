@@ -146,34 +146,27 @@ final class HuluOperationControllerTests: XCTestCase {
         controller.stopMonitoring()
     }
 
-    func testTerminalErrorPreservesIntentAndOnlyExplicitRetryRestarts() {
+    func testActionFailureRecoversWithoutAnyUserRetry() {
         let queue = DispatchQueue(label: #function)
         var factories = 0
-        let monitor = AdMonitor(operationQueue: queue, interval: 60) {
+        let monitor = AdMonitor(operationQueue: queue, interval: 60, discoveryRetryInterval: 0.01) {
             factories += 1
-            return EmptyClient(failsAction: factories == 1)
+            return EmptyClient(failsAction: true)
         }
         let controller = HuluOperationController(monitor: monitor, operationQueue: queue, prepareSetup: { _ in {} })
-        let failed = expectation(description: "failed with enabled intent")
-        controller.onChange = { if case .failed = controller.monitorStatus { failed.fulfill() } }
+        let recovering = expectation(description: "recovering, still monitoring")
+        recovering.assertForOverFulfill = false
+        controller.onChange = {
+            if case .recovering = controller.monitorStatus {
+                XCTAssertTrue(controller.isMonitoring)
+                XCTAssertFalse(controller.canRetryAdMuting)
+                recovering.fulfill()
+            }
+        }
         controller.startDefaultMonitoringIfNeeded(accessibilityTrusted: true)
-        wait(for: [failed], timeout: 1)
-        XCTAssertTrue(controller.isAdMutingEnabled)
-        XCTAssertFalse(controller.isMonitoring)
-        controller.retryAdMuting(accessibilityTrusted: false)
-        XCTAssertFalse(controller.isMonitoring)
-        let resumed = expectation(description: "explicit retry recovered")
-        controller.onChange = { if controller.monitorStatus == .waitingForPlayers { resumed.fulfill() } }
-        controller.retryAdMuting(accessibilityTrusted: true)
-        wait(for: [resumed], timeout: 1)
-        XCTAssertTrue(controller.isAdMutingEnabled)
-        XCTAssertFalse(controller.canRetryAdMuting)
-        controller.toggleMonitoring(accessibilityTrusted: true)
-        XCTAssertFalse(controller.isAdMutingEnabled)
-        controller.retryAdMuting(accessibilityTrusted: true)
-        controller.startDefaultMonitoringIfNeeded(accessibilityTrusted: true)
-        XCTAssertFalse(controller.isMonitoring)
-        XCTAssertEqual(factories, 2)
+        wait(for: [recovering], timeout: 1)
+        controller.stopMonitoring()
+        XCTAssertEqual(factories, 1)
     }
 
     func testPreparedSetupResumesDefaultIntentAndQuitConsumesPendingStart() {

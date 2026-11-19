@@ -171,7 +171,7 @@ final class AdMonitor {
             do {
                 context = try self.context(for: run)
             } catch {
-                try recoverDiscoveryFailure(error, run: run, token: token)
+                try recoverFailure(error, run: run, token: token)
                 return
             }
             if !context.isSlowAudioRetry, let since = context.audioUnavailableSince,
@@ -192,7 +192,6 @@ final class AdMonitor {
                 completePass(run: run, token: token, result: .waitingForPlayback)
                 return
             } catch is ChromeAudioControlsUnavailable {
-                // Only discovery can wait: no action or readback failure is replayed.
                 try token.check()
                 context.policy.interruptCompleteAbsenceScans()
                 let since = context.audioUnavailableSince ?? monotonicTime()
@@ -206,7 +205,7 @@ final class AdMonitor {
                 }
                 return
             } catch {
-                try recoverDiscoveryFailure(error, run: run, token: token)
+                try recoverFailure(error, run: run, token: token)
                 return
             }
             try token.check()
@@ -224,11 +223,17 @@ final class AdMonitor {
             var newlyUnmuted = 0
             for player in players where player.hasAdMarker && player.audio == .playing {
                 try token.check()
-                let outcome = try context.player.muteIfCurrentlyMarkedAd(
-                    player.identity,
-                    expectedPlayers: expected,
-                    isCancelled: { token.isCancelled }
-                )
+                let outcome: MuteMarkedAdOutcome
+                do {
+                    outcome = try context.player.muteIfCurrentlyMarkedAd(
+                        player.identity,
+                        expectedPlayers: expected,
+                        isCancelled: { token.isCancelled }
+                    )
+                } catch {
+                    context.policy.claimAfterUncertainMute(player.identity)
+                    throw error
+                }
                 if outcome == .mutedAndVerified {
                     context.policy.claimAfterVerifiedMute(player.identity)
                     newlyMuted += 1
@@ -255,15 +260,18 @@ final class AdMonitor {
                 )
             }
         } catch {
-            discardContext(for: run)
-            DispatchQueue.main.async { [weak self] in
-                self?.finishPass(run: run, token: token, result: .failure(error))
+            do {
+                try recoverFailure(error, run: run, token: token)
+            } catch {
+                discardContext(for: run)
+                DispatchQueue.main.async { [weak self] in
+                    self?.finishPass(run: run, token: token, result: .failure(error))
+                }
             }
         }
     }
 
-    /// Only factory/discovery failures enter this path; audio actions never do.
-    private func recoverDiscoveryFailure(_ error: Error, run: UInt64, token: MonitorCancellation) throws {
+    private func recoverFailure(_ error: Error, run: UInt64, token: MonitorCancellation) throws {
         try token.check()
         if error is MonitoringCancelled { throw error }
         if error is ChromeProcessUnavailable {
