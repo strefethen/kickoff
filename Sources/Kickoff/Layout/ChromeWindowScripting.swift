@@ -74,6 +74,9 @@ final class ChromeAppleScriptClient: ChromeWindowScripting {
             }
             return id
         } catch {
+            guard window.forKeyword(FourCharCode("form"))?.enumCodeValue == FourCharCode("ID  ") else {
+                throw ChromeWindowLeftOpen(description: "\(error) Chrome did not identify the new window precisely enough for Kickoff to close it safely.")
+            }
             let close = event("core", "clos")
             close.setParam(window, forKeyword: keyDirectObject)
             do {
