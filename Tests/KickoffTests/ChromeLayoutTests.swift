@@ -341,6 +341,50 @@ final class ChromeLayoutTests: XCTestCase {
         XCTAssertEqual(chrome.performedActions, [])
     }
 
+    func testBothSplitPanesLoadIntoTheSameOwnedWindow() throws {
+        let chrome = FakeChrome()
+        let expected = CGRect(x: 0, y: 25, width: 1920, height: 1055)
+        chrome.windowReads = [[], [chrome.window]]
+        chrome.frameReads = [expected]
+        chrome.inspectedNodes = [pageNode(chrome.leftPage)]
+        let (layout, _) = try makeLayout(chrome: chrome, ownsWindow: false)
+
+        try layout.prepare(frame: expected)
+        try layout.browseActiveWebsite(expectedPages: 1)
+        chrome.inspectedNodes = [pageNode(chrome.leftPage), pageNode(chrome.rightPage)]
+        try layout.browseActiveWebsite(expectedPages: 2)
+
+        XCTAssertEqual(chrome.loadedURLs.map(\.windowID), ["7001", "7001"])
+    }
+
+    func testPaneThatNeverLoadsIsNotReportedAsARedirect() throws {
+        let chrome = FakeChrome()
+        let expected = CGRect(x: 0, y: 25, width: 1920, height: 1055)
+        chrome.windowReads = [[], [chrome.window]]
+        chrome.frameReads = [expected]
+        chrome.inspectedNodes = [
+            pageNode(chrome.leftPage),
+            node(chrome.rightPage, role: "AXWebArea", url: "chrome://newtab/", depth: 1),
+        ]
+        let (layout, _) = try makeLayout(chrome: chrome, ownsWindow: false)
+
+        try layout.prepare(frame: expected)
+        XCTAssertThrowsError(try layout.browseActiveWebsite(expectedPages: 2)) { error in
+            XCTAssertEqual(String(describing: error), "Chrome did not finish loading \(WebsiteURL.approvedDefault.absoluteString) in every pane.")
+        }
+    }
+
+    func testWebsiteIsNeverLoadedIntoAWindowWithoutKickoffsScriptID() throws {
+        let chrome = FakeChrome()
+        chrome.inspectedNodes = [pageNode(chrome.leftPage)]
+        let (layout, _) = try makeLayout(chrome: chrome)
+
+        XCTAssertThrowsError(try layout.browseActiveWebsite(expectedPages: 1)) { error in
+            XCTAssertEqual(String(describing: error), "Kickoff has not created a setup window yet.")
+        }
+        XCTAssertTrue(chrome.loadedURLs.isEmpty)
+    }
+
     func testWebsiteLoadFailureKeepsItsScriptingCause() throws {
         let chrome = FakeChrome()
         let expected = CGRect(x: 0, y: 25, width: 1920, height: 1055)

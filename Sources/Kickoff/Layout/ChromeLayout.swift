@@ -42,8 +42,7 @@ final class ChromeLayout {
         windowStateTimeout: TimeInterval = 8,
         setupLog: SetupLogging? = nil,
         scripting: ChromeWindowScripting,
-        ownedWindow: AXUIElement? = nil,
-        ownedScriptID: String? = nil
+        ownedWindow: AXUIElement? = nil
     ) throws {
         self.target = target
         self.monitor = target.monitor
@@ -55,7 +54,6 @@ final class ChromeLayout {
         self.setupLog = setupLog
         self.scripting = scripting
         self.ownedWindow = ownedWindow
-        self.ownedScriptID = ownedWindow == nil ? nil : ownedScriptID
     }
 
     func rect(_ element: AXUIElement) throws -> CGRect {
@@ -190,6 +188,11 @@ final class ChromeLayout {
         }
     }
 
+    static func isBrowserPage(_ url: String) -> Bool {
+        let lowered = url.lowercased()
+        return lowered.hasPrefix("chrome:") || lowered.hasPrefix("about:")
+    }
+
     private func isNewWindow(_ window: AXUIElement, at frame: CGRect) -> Bool {
         guard let actual = try? rect(window) else { return false }
         return matchesFrame(actual, frame)
@@ -210,8 +213,13 @@ final class ChromeLayout {
             }
         } catch {
             let urls = (try? currentTargetWindow()).map(pageURLs) ?? []
-            if urls.count == expectedPages, let failure = website.redirectFailure(for: urls) {
-                throw AccessibilityFailure(failure)
+            if urls.count == expectedPages {
+                if urls.contains(where: Self.isBrowserPage) {
+                    throw AccessibilityFailure("Chrome did not finish loading \(website.absoluteString) in every pane.")
+                }
+                if let failure = website.redirectFailure(for: urls) {
+                    throw AccessibilityFailure(failure)
+                }
             }
             throw error
         }
