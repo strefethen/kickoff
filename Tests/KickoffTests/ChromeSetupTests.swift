@@ -161,7 +161,7 @@ final class ChromeSetupTests: XCTestCase {
         let website = try WebsiteURL("https://example.com/watch")
         var capturedMonitors: [Monitor] = []
         var capturedWebsites: [WebsiteURL] = []
-        let setup = ChromeSetup(target: target, website: website, openLog: { FakeLog() }) { target, website, _ in
+        let setup = ChromeSetup(target: target, website: website, maxAttempts: 1, openLog: { FakeLog() }) { target, website, _ in
             capturedMonitors.append(target.monitor)
             capturedWebsites.append(website)
             return FakeSession(id: capturedMonitors.count, events: { events.append($0) })
@@ -180,7 +180,7 @@ final class ChromeSetupTests: XCTestCase {
         let monitor = makeMonitor()
         let target = MonitorTarget(monitor: monitor, discover: { [monitor] })
         let website = try WebsiteURL("https://example.com/game")
-        let setup = ChromeSetup(target: target, website: website, openLog: { FakeLog() }) { capturedTarget, capturedWebsite, _ in
+        let setup = ChromeSetup(target: target, website: website, maxAttempts: 1, openLog: { FakeLog() }) { capturedTarget, capturedWebsite, _ in
             factoryCalls += 1
             XCTAssertEqual(capturedTarget.monitor, monitor)
             XCTAssertEqual(capturedWebsite, website)
@@ -195,7 +195,7 @@ final class ChromeSetupTests: XCTestCase {
         var events: [String] = []
         var factoryCalls = 0
         let monitor = makeMonitor()
-        let setup = ChromeSetup(target: MonitorTarget(monitor: monitor, discover: { [monitor] }), website: .approvedDefault, openLog: { FakeLog() }) { _, _, _ in
+        let setup = ChromeSetup(target: MonitorTarget(monitor: monitor, discover: { [monitor] }), website: .approvedDefault, maxAttempts: 1, openLog: { FakeLog() }) { _, _, _ in
             factoryCalls += 1
             let session = FakeSession(id: factoryCalls, events: { events.append($0) })
             session.setupError = StubError.setup
@@ -212,7 +212,7 @@ final class ChromeSetupTests: XCTestCase {
         let target = MonitorTarget(monitor: monitor, discover: { [monitor] })
         let website = try WebsiteURL("https://example.com/watch")
         var capturedWebsites: [WebsiteURL] = []
-        let setup = ChromeSetup(target: target, website: website, openLog: { FakeLog() }) { target, capturedWebsite, _ in
+        let setup = ChromeSetup(target: target, website: website, maxAttempts: 1, openLog: { FakeLog() }) { target, capturedWebsite, _ in
             XCTAssertEqual(target.monitor, monitor)
             capturedWebsites.append(capturedWebsite)
             let id = capturedWebsites.count
@@ -253,7 +253,7 @@ final class ChromeSetupTests: XCTestCase {
         var factoryCalls = 0
         let monitor = makeMonitor()
         let target = MonitorTarget(monitor: monitor, discover: { [monitor] })
-        let setup = ChromeSetup(target: target, website: .approvedDefault, openLog: { FakeLog() }) { _, _, _ in
+        let setup = ChromeSetup(target: target, website: .approvedDefault, maxAttempts: 1, openLog: { FakeLog() }) { _, _, _ in
             factoryCalls += 1
             let session = FakeSession(id: factoryCalls, events: { _ in })
             session.splitError = StubError.setup
@@ -271,7 +271,7 @@ final class ChromeSetupTests: XCTestCase {
         var verifyCalls: [Int] = []
         let monitor = makeMonitor()
         let target = MonitorTarget(monitor: monitor, discover: { [monitor] })
-        let setup = ChromeSetup(target: target, website: .approvedDefault, openLog: { FakeLog() }) { _, _, _ in
+        let setup = ChromeSetup(target: target, website: .approvedDefault, maxAttempts: 1, openLog: { FakeLog() }) { _, _, _ in
             factoryCalls += 1
             let id = factoryCalls
             let session = FakeSession(id: id, events: { event in
@@ -293,7 +293,7 @@ final class ChromeSetupTests: XCTestCase {
         var factoryCalls = 0
         let monitor = makeMonitor()
         let log = FakeLog()
-        let setup = ChromeSetup(target: MonitorTarget(monitor: monitor, discover: { [monitor] }), website: .approvedDefault, openLog: { log }) { _, _, _ in
+        let setup = ChromeSetup(target: MonitorTarget(monitor: monitor, discover: { [monitor] }), website: .approvedDefault, maxAttempts: 1, openLog: { log }) { _, _, _ in
             factoryCalls += 1
             let session = FakeSession(id: factoryCalls, events: { events.append($0) })
             if factoryCalls == 2 { session.splitError = AccessibilityFailure("Create window on Test Display: placement failed.") }
@@ -301,13 +301,7 @@ final class ChromeSetupTests: XCTestCase {
         }
 
         XCTAssertThrowsError(try setup.setup(mode: .quad)) { error in
-            XCTAssertEqual(String(describing: error), """
-            Create window on Test Display: placement failed.
-
-            Kickoff closed the 2 Chrome windows this setup opened.
-
-            Details: /logs/setup.log
-            """)
+            XCTAssertEqual(String(describing: error), "Create window on Test Display: placement failed.")
         }
         XCTAssertEqual(Array(events.suffix(2)), ["close:2", "close:1"])
         XCTAssertTrue(log.lines.contains { $0.hasPrefix("setup-failed mode=quad") })
@@ -318,7 +312,7 @@ final class ChromeSetupTests: XCTestCase {
         var events: [String] = []
         var factoryCalls = 0
         let monitor = makeMonitor()
-        let setup = ChromeSetup(target: MonitorTarget(monitor: monitor, discover: { [monitor] }), website: .approvedDefault, openLog: { FakeLog() }) { _, _, _ in
+        let setup = ChromeSetup(target: MonitorTarget(monitor: monitor, discover: { [monitor] }), website: .approvedDefault, maxAttempts: 1, openLog: { FakeLog() }) { _, _, _ in
             factoryCalls += 1
             let session = FakeSession(id: factoryCalls, events: { events.append($0) })
             if factoryCalls == 2 {
@@ -330,14 +324,15 @@ final class ChromeSetupTests: XCTestCase {
 
         XCTAssertThrowsError(try setup.setup(mode: .quad)) { error in
             let description = String(describing: error)
-            XCTAssertTrue(description.contains("Kickoff closed 1 of the 2 Chrome windows this setup opened. Chrome kept the setup window open."))
+            XCTAssertTrue(description.hasSuffix("One Chrome window Kickoff opened could not be closed."))
+            XCTAssertFalse(description.contains("setup.log"))
         }
         XCTAssertEqual(Array(events.suffix(2)), ["close:2", "close:1"])
     }
 
     func testFailureBeforeAnyWindowExistsDoesNotClaimCleanup() throws {
         let monitor = makeMonitor()
-        let setup = ChromeSetup(target: MonitorTarget(monitor: monitor, discover: { [monitor] }), website: .approvedDefault, openLog: { FakeLog() }) { _, _, _ in
+        let setup = ChromeSetup(target: MonitorTarget(monitor: monitor, discover: { [monitor] }), website: .approvedDefault, maxAttempts: 1, openLog: { FakeLog() }) { _, _, _ in
             let session = FakeSession(id: 1, events: { _ in })
             session.ownsWindow = false
             session.setupError = StubError.setup
@@ -346,6 +341,88 @@ final class ChromeSetupTests: XCTestCase {
 
         XCTAssertThrowsError(try setup.setup(mode: .split)) { error in
             XCTAssertFalse(String(describing: error).contains("Kickoff closed"))
+        }
+    }
+
+    private func retryingSetup(
+        log: FakeLog = FakeLog(),
+        configure: @escaping (Int, FakeSession) -> Void
+    ) -> (ChromeSetup, () -> [String], () -> Int) {
+        var events: [String] = []
+        var factoryCalls = 0
+        var sleeps = 0
+        let monitor = makeMonitor()
+        let setup = ChromeSetup(
+            target: MonitorTarget(monitor: monitor, discover: { [monitor] }),
+            website: .approvedDefault,
+            sleep: { _ in sleeps += 1 },
+            openLog: { log }
+        ) { _, _, _ in
+            factoryCalls += 1
+            let session = FakeSession(id: factoryCalls, events: { events.append($0) })
+            configure(factoryCalls, session)
+            return session
+        }
+        return (setup, { events }, { sleeps })
+    }
+
+    func testFailedFirstAttemptIsClosedThenRetriedToSuccess() throws {
+        for mode in [ChromeSetupMode.single, .split] {
+            let log = FakeLog()
+            let (setup, events, sleeps) = retryingSetup(log: log) { id, session in
+                if id == 1 { session.setupError = StubError.setup }
+            }
+            try setup.setup(mode: mode)
+            XCTAssertTrue(events().contains("close:1"))
+            XCTAssertFalse(events().contains("close:2"))
+            XCTAssertEqual(sleeps(), 1)
+            XCTAssertTrue(log.lines.contains { $0.hasPrefix("setup-failed mode=\(mode) attempt=1") })
+            XCTAssertEqual(log.lines.last, "setup-complete mode=\(mode) attempt=2")
+        }
+    }
+
+    func testQuadRetryClosesBothWindowsOfTheFailedAttempt() throws {
+        let (setup, events, _) = retryingSetup() { id, session in
+            if id == 2 { session.splitError = StubError.setup }
+        }
+        try setup.setup(mode: .quad)
+        XCTAssertTrue(events().contains("close:2"))
+        XCTAssertTrue(events().contains("close:1"))
+        XCTAssertFalse(events().contains("close:3"))
+    }
+
+    func testRetriesStopAfterMaxAttemptsWithTheLastCause() {
+        let (setup, events, sleeps) = retryingSetup() { id, session in
+            session.setupError = id == 3 ? StubError.verify : StubError.setup
+        }
+        XCTAssertThrowsError(try setup.setup(mode: .split)) { error in
+            XCTAssertEqual((error as? ChromeSetupFailure)?.cause as? StubError, .verify)
+        }
+        XCTAssertEqual(events().filter { $0.hasPrefix("setup:") }.count, 3)
+        XCTAssertEqual(sleeps(), 2)
+    }
+
+    func testNoRetryWhenAWindowCouldNotBeClosed() {
+        let (setup, events, _) = retryingSetup() { _, session in
+            session.setupError = StubError.setup
+            session.closeError = AccessibilityFailure("Chrome kept the setup window open.")
+        }
+        XCTAssertThrowsError(try setup.setup(mode: .split))
+        XCTAssertEqual(events().filter { $0.hasPrefix("setup:") }.count, 1)
+    }
+
+    func testNoRetryForPermissionProblems() {
+        let permissionErrors: [Error] = [
+            ChromeScriptingFailure.from(errorNumber: -1743, message: ""),
+            ChromeScriptingFailure.from(errorNumber: -1712, message: ""),
+            AccessibilityFailure("Accessibility permission is missing.", axError: .apiDisabled),
+        ]
+        for permissionError in permissionErrors {
+            let (setup, events, _) = retryingSetup() { _, session in
+                session.setupError = permissionError
+            }
+            XCTAssertThrowsError(try setup.setup(mode: .split))
+            XCTAssertEqual(events().filter { $0.hasPrefix("setup:") }.count, 1)
         }
     }
 

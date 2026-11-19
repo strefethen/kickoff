@@ -32,29 +32,15 @@ extension ChromeLayout: ChromeWindowSettingUp {}
 
 struct ChromeSetupFailure: Error, CustomStringConvertible {
     let cause: Error
-    let closedWindows: Int
-    let cleanupFailures: [String]
-    let logLocation: String
-    let logFailure: String?
+    let unclosedWindows: Int
 
     var description: String {
-        var parts = [String(describing: cause)]
-        let openedWindows = closedWindows + cleanupFailures.count
-        if cleanupFailures.isEmpty {
-            if closedWindows == 1 {
-                parts.append("Kickoff closed the Chrome window this setup opened.")
-            } else if closedWindows > 1 {
-                parts.append("Kickoff closed the \(closedWindows) Chrome windows this setup opened.")
-            }
-        } else {
-            parts.append("Kickoff closed \(closedWindows) of the \(openedWindows) Chrome windows this setup opened. \(cleanupFailures.joined(separator: " "))")
+        let cause = String(describing: self.cause)
+        switch unclosedWindows {
+        case 0: return cause
+        case 1: return "\(cause)\n\nOne Chrome window Kickoff opened could not be closed."
+        default: return "\(cause)\n\n\(unclosedWindows) Chrome windows Kickoff opened could not be closed."
         }
-        if let logFailure {
-            parts.append("The setup log at \(logLocation) stopped recording: \(logFailure)")
-        } else {
-            parts.append("Details: \(logLocation)")
-        }
-        return parts.joined(separator: "\n\n")
     }
 }
 
@@ -66,10 +52,16 @@ final class ChromeSetup {
     private let website: WebsiteURL
     private let openLog: () throws -> SetupLogging
     private let makeSession: SessionFactory
+    private let maxAttempts: Int
+    private let retryDelay: TimeInterval
+    private let sleep: (TimeInterval) -> Void
 
     init(
         target: MonitorTarget,
         website: WebsiteURL,
+        maxAttempts: Int = 3,
+        retryDelay: TimeInterval = 1,
+        sleep: @escaping (TimeInterval) -> Void = Thread.sleep,
         openLog: @escaping () throws -> SetupLogging = { try SetupLog() },
         makeSession: @escaping SessionFactory = { target, website, log in
             try ChromeApplication.ensureRunning()
@@ -87,11 +79,43 @@ final class ChromeSetup {
         self.website = website
         self.openLog = openLog
         self.makeSession = makeSession
+        precondition(maxAttempts >= 1)
+        self.maxAttempts = maxAttempts
+        self.retryDelay = retryDelay
+        self.sleep = sleep
     }
 
     func setup(mode: ChromeSetupMode) throws {
         let log = try openLog()
         log.record("setup-start mode=\(mode) display=\(target.monitor.name) bounds=\(NSStringFromRect(target.monitor.bounds)) visible=\(NSStringFromRect(target.monitor.visibleBounds))")
+        var attempt = 1
+        while true {
+            do {
+                try runAttempt(mode: mode, attempt: attempt, log: log)
+                log.record("setup-complete mode=\(mode) attempt=\(attempt)")
+                return
+            } catch let failure as ChromeSetupFailure {
+                guard attempt < maxAttempts, failure.unclosedWindows == 0, Self.isRetryable(failure.cause) else {
+                    throw failure
+                }
+                attempt += 1
+                log.record("setup-retry attempt=\(attempt)")
+                sleep(retryDelay)
+            }
+        }
+    }
+
+    static func isRetryable(_ error: Error) -> Bool {
+        if let scripting = error as? ChromeScriptingFailure {
+            return scripting.kind != .notPermitted && scripting.kind != .timedOut
+        }
+        if let accessibility = error as? AccessibilityFailure {
+            return accessibility.axError != .apiDisabled
+        }
+        return true
+    }
+
+    private func runAttempt(mode: ChromeSetupMode, attempt: Int, log: SetupLogging) throws {
         var sessions: [ChromeWindowSettingUp] = []
         let session = { () throws -> ChromeWindowSettingUp in
             let created = try self.makeSession(self.target, self.website, log)
@@ -107,26 +131,20 @@ final class ChromeSetup {
             case .quad:
                 try setupQuad(session: session)
             }
-            log.record("setup-complete mode=\(mode)")
         } catch {
-            log.record("setup-failed mode=\(mode) error=\(String(describing: error).replacingOccurrences(of: "\n", with: " "))")
+            log.record("setup-failed mode=\(mode) attempt=\(attempt) error=\(String(describing: error).replacingOccurrences(of: "\n", with: " "))")
             var closedWindows = 0
-            var cleanupFailures: [String] = []
+            var unclosedWindows = 0
             for created in sessions.reversed() {
                 do {
                     if try created.closeOwnedWindow() { closedWindows += 1 }
                 } catch {
-                    cleanupFailures.append(String(describing: error))
+                    unclosedWindows += 1
+                    log.record("setup-cleanup-failed error=\(String(describing: error).replacingOccurrences(of: "\n", with: " "))")
                 }
             }
-            log.record("setup-cleanup closed=\(closedWindows) failures=\(cleanupFailures.count)")
-            throw ChromeSetupFailure(
-                cause: error,
-                closedWindows: closedWindows,
-                cleanupFailures: cleanupFailures,
-                logLocation: log.location,
-                logFailure: log.writeFailure
-            )
+            log.record("setup-cleanup closed=\(closedWindows) failures=\(unclosedWindows)")
+            throw ChromeSetupFailure(cause: error, unclosedWindows: unclosedWindows)
         }
     }
 
