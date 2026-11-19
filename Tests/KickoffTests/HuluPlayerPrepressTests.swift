@@ -294,6 +294,31 @@ final class HuluPlayerPrepressTests: XCTestCase {
         XCTAssertEqual(chrome.presses, 1)
     }
 
+    func testReadbackFailureAfterThePressIsReportedAsPressed() throws {
+        let chrome = FakeChrome()
+        chrome.mutationChangesState = false
+        let client = ChromePlayerClient(chrome: chrome)
+        let player = try XCTUnwrap(client.discoverPlayers().first)
+        XCTAssertThrowsError(try client.muteIfCurrentlyMarkedAd(player.identity, expectedPlayers: [player.identity], isCancelled: { false })) { error in
+            XCTAssertTrue(error is MuteAfterPressUnverified)
+        }
+        XCTAssertEqual(chrome.presses, 1)
+    }
+
+    func testFailureBeforeThePressIsNotReportedAsPressed() throws {
+        let chrome = FakeChrome()
+        chrome.pageCount = 2
+        chrome.split = true
+        chrome.duplicateURLs = true
+        let client = ChromePlayerClient(chrome: chrome)
+        let players = try client.discoverPlayers()
+        chrome.onMarkerValueRead = { chrome.selected[1] = false }
+        XCTAssertThrowsError(try client.muteIfCurrentlyMarkedAd(players[0].identity, expectedPlayers: players.map(\.identity), isCancelled: { false })) { error in
+            XCTAssertFalse(error is MuteAfterPressUnverified)
+        }
+        XCTAssertEqual(chrome.presses, 0)
+    }
+
     func testStateChangingDuringActionValidationCannotToggleBack() throws {
         let chrome = FakeChrome()
         let client = ChromePlayerClient(chrome: chrome)

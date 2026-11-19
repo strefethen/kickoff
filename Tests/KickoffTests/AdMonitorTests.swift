@@ -174,6 +174,7 @@ final class AdMonitorTests: XCTestCase {
         let fake = FakePlayerClient(players: [ad])
         fake.discoveries = [[ad], [mutedAd], [game], [game], [game]]
         fake.muteErrorsRemaining = 1
+        fake.actionError = MuteAfterPressUnverified(cause: FakeFailure.mutationOrReadback)
         var factories = 0
         let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01,
                                 discoveryRetryInterval: 0.01) { factories += 1; return fake }
@@ -206,6 +207,23 @@ final class AdMonitorTests: XCTestCase {
         let scanned = expectation(description: "several complete scans")
         scanned.assertForOverFulfill = false
         monitor.onStatusChange = { _ in if fake.discoveryCount >= 4 { scanned.fulfill() } }
+        monitor.start()
+        wait(for: [scanned], timeout: 2)
+        monitor.stopAndDrain()
+        XCTAssertTrue(fake.restoreCalls().isEmpty)
+    }
+
+    func testMuteThatFailsBeforeThePressNeverUnmutesATabTheUserMuted() {
+        let ad = player("https://www.hulu.com/watch/ad", marked: true)
+        let userMuted = PlayerState(identity: ad.identity, windowIndex: 0, audio: .muted, hasAdMarker: false)
+        let fake = FakePlayerClient(players: [ad])
+        fake.discoveries = [[ad], [userMuted], [userMuted], [userMuted], [userMuted]]
+        fake.muteErrorsRemaining = 1
+        let monitor = AdMonitor(operationQueue: DispatchQueue(label: #function), interval: 0.01,
+                                discoveryRetryInterval: 0.01) { fake }
+        let scanned = expectation(description: "several complete scans")
+        scanned.assertForOverFulfill = false
+        monitor.onStatusChange = { _ in if fake.discoveryCount >= 5 { scanned.fulfill() } }
         monitor.start()
         wait(for: [scanned], timeout: 2)
         monitor.stopAndDrain()

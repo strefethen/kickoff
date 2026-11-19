@@ -120,7 +120,11 @@ final class ChromePlayerClient: PlayerControlling {
         if isCancelled() { throw MonitoringCancelled() }
 
         let result = tabAudio.pressOnce(controllable.audio)
-        _ = try tabAudio.waitForState(.muted, binding: controllable.audio, pressResult: result, isCancelled: isCancelled)
+        do {
+            _ = try tabAudio.waitForState(.muted, binding: controllable.audio, pressResult: result, isCancelled: isCancelled)
+        } catch {
+            throw MuteAfterPressUnverified(cause: error)
+        }
         return .mutedAndVerified
     }
 

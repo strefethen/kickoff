@@ -84,3 +84,8 @@ struct PlayerPlaybackPaused: Error, CustomStringConvertible {
 }
 
 struct MonitoringCancelled: Error {}
+
+struct MuteAfterPressUnverified: Error, CustomStringConvertible {
+    let cause: Error
+    var description: String { String(describing: cause) }
+}

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Per-monitor-run ownership of tabs muted by this run. Claims never survive a
+/// Per-monitor-run ownership of tabs this run pressed mute on. Claims never survive a
 /// stop, restart, cancellation, setup, or quit. A lease may
 /// outlive a temporary gap in supported-player discovery, but cannot act then.
 final class AdAudioPolicy {

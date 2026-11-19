@@ -230,9 +230,9 @@ final class AdMonitor {
                         expectedPlayers: expected,
                         isCancelled: { token.isCancelled }
                     )
-                } catch {
+                } catch let unverified as MuteAfterPressUnverified {
                     context.policy.claimAfterUncertainMute(player.identity)
-                    throw error
+                    throw unverified.cause
                 }
                 if outcome == .mutedAndVerified {
                     context.policy.claimAfterVerifiedMute(player.identity)
