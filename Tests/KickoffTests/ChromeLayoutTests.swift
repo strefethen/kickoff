@@ -287,7 +287,7 @@ final class ChromeLayoutTests: XCTestCase {
         let expected = CGRect(x: 0, y: 25, width: 1920, height: 527)
         chrome.windowReads = [[], [chrome.window]]
         chrome.frameReads = [CGRect(x: 2600, y: 100, width: 1200, height: 900)]
-        let (layout, _) = try makeLayout(chrome: chrome, timeout: 1)
+        let (layout, _) = try makeLayout(chrome: chrome, timeout: 1, ownsWindow: false)
 
         XCTAssertThrowsError(try layout.prepare(frame: expected)) { error in
             XCTAssertTrue(String(describing: error).hasPrefix("Chrome did not open the requested window at {{0, 25}, {1920, 527}}"))
@@ -295,6 +295,24 @@ final class ChromeLayoutTests: XCTestCase {
         XCTAssertEqual(chrome.closedScriptIDs, ["7001"])
         XCTAssertFalse(try layout.closeOwnedWindow())
         XCTAssertEqual(chrome.setAttributes, [])
+    }
+
+    func testExistingChromeWindowIsNeverAdoptedAsTheSetupWindow() throws {
+        let chrome = FakeChrome()
+        let monitor = makeMonitor(bounds: bounds)
+        let layout = try ChromeLayout(
+            target: MonitorTarget(monitor: monitor, discover: { [monitor] }),
+            website: .approvedDefault,
+            chrome: chrome,
+            scripting: chrome
+        )
+
+        XCTAssertThrowsError(try layout.currentTargetWindow())
+        XCTAssertThrowsError(try layout.enterFullScreen())
+        XCTAssertFalse(try layout.closeOwnedWindow())
+        XCTAssertEqual(chrome.presses, 0)
+        XCTAssertEqual(chrome.setAttributes, [])
+        XCTAssertEqual(chrome.closedScriptIDs, [])
     }
 
     func testAutomationDenialSurvivesStepWrappingAndIsNotRetryable() throws {
@@ -549,7 +567,7 @@ final class ChromeLayoutTests: XCTestCase {
 
     func testCloseWithoutOwnedWindowNeverTouchesChrome() throws {
         let chrome = FakeChrome()
-        let (layout, _) = try makeLayout(chrome: chrome)
+        let (layout, _) = try makeLayout(chrome: chrome, ownsWindow: false)
 
         XCTAssertFalse(try layout.closeOwnedWindow())
         XCTAssertEqual(chrome.performedActions, [])
@@ -700,7 +718,7 @@ final class ChromeLayoutTests: XCTestCase {
 
     func testRaiseRequiresOwnedWindowAndNeverAdoptsExistingWindow() throws {
         let chrome = FakeChrome()
-        let (layout, _) = try makeLayout(chrome: chrome)
+        let (layout, _) = try makeLayout(chrome: chrome, ownsWindow: false)
 
         XCTAssertThrowsError(try layout.raiseWindow()) { error in
             XCTAssertTrue(String(describing: error).contains("created by this setup session"))
@@ -844,7 +862,8 @@ final class ChromeLayoutTests: XCTestCase {
             chrome: chrome,
             now: { clock.current },
             sleep: clock.sleep,
-            scripting: chrome
+            scripting: chrome,
+            ownedWindow: chrome.window
         )
 
         XCTAssertThrowsError(try layout.enterFullScreen()) { error in
@@ -901,7 +920,8 @@ final class ChromeLayoutTests: XCTestCase {
     private func makeLayout(
         chrome: FakeChrome,
         timeout: TimeInterval = 8,
-        bounds: CGRect? = nil
+        bounds: CGRect? = nil,
+        ownsWindow: Bool = true
     ) throws -> (ChromeLayout, FakeClock) {
         let monitor = makeMonitor(bounds: bounds ?? self.bounds)
         let clock = FakeClock()
@@ -912,7 +932,8 @@ final class ChromeLayoutTests: XCTestCase {
             now: { clock.current },
             sleep: clock.sleep,
             windowStateTimeout: timeout,
-            scripting: chrome
+            scripting: chrome,
+            ownedWindow: ownsWindow ? chrome.window : nil
         )
         return (layout, clock)
     }

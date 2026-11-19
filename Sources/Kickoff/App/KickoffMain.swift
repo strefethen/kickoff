@@ -54,10 +54,8 @@ struct KickoffMain {
               --website            Read the website saved for the next setup.
               --diagnose-layout    Read target-monitor and Chrome window layout.
               --prepare            Create the setup-owned Chrome window on the target monitor.
-              --split              Create split view in the sole target-monitor Chrome window.
               --setup              Run the complete Chrome setup on the target monitor.
               --setup-quad         Create two stacked split-view Chrome windows on the target monitor.
-              --fullscreen         Enter full screen in the sole target-monitor Chrome window.
 
             Inspection commands are read-only. The menu-bar app starts Ad Muting automatically
             when Accessibility is trusted.
@@ -106,9 +104,7 @@ struct KickoffMain {
                 chrome: chrome,
                 scripting: ChromeAppleScriptClient(pid: chrome.pid)
             ).environment()
-        case "--prepare" where arguments.count == 1,
-             "--split" where arguments.count == 1,
-             "--fullscreen" where arguments.count == 1:
+        case "--prepare" where arguments.count == 1:
             _ = NSApplication.shared
             let chrome = try ChromeAccessibilityClient()
             let layout = try ChromeLayout(
@@ -117,9 +113,7 @@ struct KickoffMain {
                 chrome: chrome,
                 scripting: ChromeAppleScriptClient(pid: chrome.pid)
             )
-            if arguments[0] == "--prepare" { _ = try layout.prepare() }
-            if arguments[0] == "--split" { try layout.split() }
-            if arguments[0] == "--fullscreen" { try layout.enterFullScreen() }
+            _ = try layout.prepare()
             output = try layout.environment()
         default:
             throw AccessibilityFailure("Invalid arguments. Run Kickoff --help.")

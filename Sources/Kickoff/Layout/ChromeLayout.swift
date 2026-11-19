@@ -39,7 +39,8 @@ final class ChromeLayout {
         sleep: @escaping (TimeInterval) -> Void = Thread.sleep,
         windowStateTimeout: TimeInterval = 8,
         setupLog: SetupLogging? = nil,
-        scripting: ChromeWindowScripting
+        scripting: ChromeWindowScripting,
+        ownedWindow: AXUIElement? = nil
     ) throws {
         self.target = target
         self.monitor = target.monitor
@@ -50,6 +51,7 @@ final class ChromeLayout {
         self.windowStateTimeout = windowStateTimeout
         self.setupLog = setupLog
         self.scripting = scripting
+        self.ownedWindow = ownedWindow
     }
 
     func rect(_ element: AXUIElement) throws -> CGRect {
@@ -79,18 +81,11 @@ final class ChromeLayout {
     func currentTargetWindow() throws -> ChromeWindowSnapshot {
         let display = try target.validate()
         let windows = try chrome.windows()
-        let element: AXUIElement
-        if let ownedWindow {
-            guard windows.contains(where: { CFEqual($0, ownedWindow) }) else {
-                throw AccessibilityFailure("The setup window disappeared.")
-            }
-            element = ownedWindow
-        } else {
-            guard windows.count == 1, let only = windows.first else {
-                throw AccessibilityFailure("This diagnostic command requires one Chrome window.")
-            }
-            element = only
-            ownedWindow = only
+        guard let element = ownedWindow else {
+            throw AccessibilityFailure("Kickoff has not created a setup window yet.")
+        }
+        guard windows.contains(where: { CFEqual($0, element) }) else {
+            throw AccessibilityFailure("The setup window disappeared.")
         }
         guard display.bounds.contains(try rect(element)) else {
             throw AccessibilityFailure("The setup window is no longer on \(monitor.name).")
