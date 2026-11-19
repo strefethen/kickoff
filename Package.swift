@@ -8,15 +8,8 @@ let package = Package(
         .executable(name: "Kickoff", targets: ["Kickoff"]),
     ],
     targets: [
-        .target(
-            name: "CAXNavigation",
-            path: "Sources/CAXNavigation",
-            publicHeadersPath: "include",
-            linkerSettings: [.linkedFramework("ApplicationServices")]
-        ),
         .executableTarget(
             name: "Kickoff",
-            dependencies: ["CAXNavigation"],
             path: "Sources/Kickoff",
             linkerSettings: [
                 .linkedFramework("AppKit"),

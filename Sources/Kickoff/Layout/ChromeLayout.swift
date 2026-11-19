@@ -2,12 +2,13 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-protocol ChromeLayoutAccessing: ChromeAccessibilityAccessing, ChromeAddressFieldAccessing {}
+protocol ChromeLayoutAccessing: ChromeAccessibilityAccessing {
+    func set(_ element: AXUIElement, attribute: String, value: CFTypeRef) throws
+}
 
 extension ChromeAccessibilityClient: ChromeLayoutAccessing {}
 
 enum ChromeViewClass {
-    static let omnibox = "OmniboxViewViews"
     static let splitButton = "SplitTabsToolbarButton"
     static let splitResizeHandle = "MultiContentsResizeHandle"
     static let tab = "Tab"
@@ -25,6 +26,7 @@ final class ChromeLayout {
     private let setupLog: SetupLogging?
     private let scripting: ChromeWindowScripting
     private var ownedWindow: AXUIElement?
+    private var ownedScriptID: String?
     private let layoutTerminals: Set<String> = [
         "AXWebArea", kAXTextFieldRole, kAXButtonRole, kAXRadioButtonRole,
         kAXSliderRole, kAXStaticTextRole, kAXImageRole, "AXLink",
@@ -40,7 +42,8 @@ final class ChromeLayout {
         windowStateTimeout: TimeInterval = 8,
         setupLog: SetupLogging? = nil,
         scripting: ChromeWindowScripting,
-        ownedWindow: AXUIElement? = nil
+        ownedWindow: AXUIElement? = nil,
+        ownedScriptID: String? = nil
     ) throws {
         self.target = target
         self.monitor = target.monitor
@@ -52,6 +55,7 @@ final class ChromeLayout {
         self.setupLog = setupLog
         self.scripting = scripting
         self.ownedWindow = ownedWindow
+        self.ownedScriptID = ownedWindow == nil ? nil : ownedScriptID
     }
 
     func rect(_ element: AXUIElement) throws -> CGRect {
@@ -113,6 +117,7 @@ final class ChromeLayout {
             throw AccessibilityFailure("\(error) Kickoff closed the window it requested.")
         }
         ownedWindow = window
+        ownedScriptID = scriptID
         try applyNormalFrame(requestedFrame, to: window, moveBeforeResize: true)
         log(["event": "window-on-monitor", "chromePID": chrome.pid, "display": monitor.name])
         return try waitForWindow(seconds: windowStateTimeout) { _ in true }
@@ -166,14 +171,12 @@ final class ChromeLayout {
     }
 
     func browseActiveWebsite(expectedPages: Int) throws {
-        let original = try currentTargetWindow()
-        let fields = original.nodes.filter {
-            $0.role == kAXTextFieldRole && $0.domClassList.contains(ChromeViewClass.omnibox)
+        _ = try currentTargetWindow()
+        guard let ownedScriptID else {
+            throw AccessibilityFailure("Kickoff has not created a setup window yet.")
         }
-        guard fields.count == 1, let field = fields.first else {
-            throw AccessibilityFailure("Chrome's address bar is ambiguous.")
-        }
-        try submitWebsite(in: original.element, addressField: field.element)
+        try scripting.loadURL(website.absoluteString, inWindow: ownedScriptID)
+        log(["event": "website-requested", "chromeWindowID": ownedScriptID, "url": website.absoluteString])
         let loaded: ChromeWindowSnapshot
         do {
             loaded = try waitForWindow(seconds: 20) {
@@ -336,15 +339,6 @@ final class ChromeLayout {
         throw AccessibilityFailure("Chrome did not make the raised setup window main and focused.")
     }
 
-    func focusOwnedWindowForSubmission() throws {
-        guard let window = ownedWindow else {
-            throw AccessibilityFailure("Website submission requires the window created by this setup session.")
-        }
-        if isElement(try chrome.attribute(chrome.application, kAXFocusedWindowAttribute), equalTo: window) { return }
-        log(["event": "setup-window-not-focused"])
-        try raiseWindow()
-    }
-
     func closeOwnedWindow() throws -> Bool {
         guard let window = ownedWindow else { return false }
         let listedDeadline = now().addingTimeInterval(min(windowStateTimeout, 3))
@@ -367,6 +361,7 @@ final class ChromeLayout {
         repeat {
             if try !chrome.windows().contains(where: { CFEqual($0, window) }) {
                 ownedWindow = nil
+                ownedScriptID = nil
                 return true
             }
             sleep(0.2)
@@ -592,58 +587,6 @@ final class ChromeLayout {
         let areas = window.nodes.filter { $0.role == "AXWebArea" }
         guard let depth = areas.map(\.depth).min() else { return [] }
         return areas.filter { $0.depth == depth }
-    }
-
-    private func submitWebsite(in window: AXUIElement, addressField: AXUIElement) throws {
-        let submit = {
-            _ = try self.target.validate()
-            try self.chrome.set(self.chrome.application, attribute: kAXFrontmostAttribute, value: kCFBooleanTrue)
-            let deadline = Date().addingTimeInterval(4)
-            while NSWorkspace.shared.frontmostApplication?.processIdentifier != self.chrome.pid && Date() < deadline {
-                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-            }
-            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == self.chrome.pid else {
-                throw AccessibilityFailure("Chrome did not become the foreground app. No Return was sent.")
-            }
-            try self.focusOwnedWindowForSubmission()
-            try self.chrome.set(addressField, attribute: kAXFocusedAttribute, value: kCFBooleanTrue)
-            let entry = ChromeAddressEntry(
-                chrome: self.chrome,
-                addressField: addressField,
-                expected: self.website.absoluteString,
-                validateRecipient: {
-                    // Each check names its own failure so an interrupted
-                    // submission reports what actually moved.
-                    guard try self.chrome.windows().contains(where: { CFEqual($0, window) }) else {
-                        throw AccessibilityFailure("The setup window closed; submission stopped.")
-                    }
-                    let display = try self.target.validate()
-                    let windowFrame = try self.rect(window)
-                    guard display.bounds.contains(windowFrame) else {
-                        throw AccessibilityFailure("The setup window moved off \(self.monitor.name) to \(NSStringFromRect(windowFrame)); submission stopped.")
-                    }
-                    guard let focusedWindow = try self.chrome.attribute(self.chrome.application, kAXFocusedWindowAttribute),
-                          CFEqual(focusedWindow, window) else {
-                        throw AccessibilityFailure("The setup window is no longer Chrome's focused window; submission stopped.")
-                    }
-                    guard let focus = try self.chrome.attribute(self.chrome.application, kAXFocusedUIElementAttribute),
-                          CFEqual(focus, addressField) else {
-                        throw AccessibilityFailure("Keyboard focus left the setup window's address field; submission stopped.")
-                    }
-                    let foreground = NSWorkspace.shared.frontmostApplication
-                    guard try self.chrome.attribute(self.chrome.application, kAXFrontmostAttribute) as? Bool == true,
-                          foreground?.processIdentifier == self.chrome.pid else {
-                        throw AccessibilityFailure("Chrome is no longer the foreground app (foreground: \(foreground?.localizedName ?? "unknown")); submission stopped.")
-                    }
-                },
-                logKeyResult: { event, result in
-                    self.log(["event": event, "api": "AXUIElementPostKeyboardEvent", "result": result.rawValue])
-                }
-            )
-            try entry.submit()
-        }
-        if Thread.isMainThread { try submit() }
-        else { try DispatchQueue.main.sync(execute: submit) }
     }
 
     private func performAction(_ action: String, on element: AXUIElement) throws {

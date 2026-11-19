@@ -4,6 +4,7 @@ import Foundation
 protocol ChromeWindowScripting: AnyObject {
     func makeWindow(bounds: CGRect) throws -> String
     func closeWindow(id: String) throws
+    func loadURL(_ url: String, inWindow id: String) throws
 }
 
 struct ChromeWindowLeftOpen: Error, CustomStringConvertible, Equatable {
@@ -89,15 +90,36 @@ final class ChromeAppleScriptClient: ChromeWindowScripting {
     }
 
     func closeWindow(id: String) throws {
+        let close = event("core", "clos")
+        close.setParam(try Self.windowSpecifier(id: id), forKeyword: keyDirectObject)
+        _ = try send(close)
+    }
+
+    func loadURL(_ url: String, inWindow id: String) throws {
+        let set = event("core", "setd")
+        set.setParam(
+            Self.specifier(
+                want: "prop",
+                form: "prop",
+                key: NSAppleEventDescriptor(typeCode: FourCharCode("URL ")),
+                container: Self.specifier(
+                    want: "prop",
+                    form: "prop",
+                    key: NSAppleEventDescriptor(typeCode: FourCharCode("acTa")),
+                    container: try Self.windowSpecifier(id: id)
+                )
+            ),
+            forKeyword: keyDirectObject
+        )
+        set.setParam(NSAppleEventDescriptor(string: url), forKeyword: FourCharCode("data"))
+        _ = try send(set)
+    }
+
+    private static func windowSpecifier(id: String) throws -> NSAppleEventDescriptor {
         guard !id.isEmpty, id.allSatisfy(\.isNumber) else {
             throw ChromeScriptingFailure(kind: .other(0), description: "Chrome window id \(id) is not numeric.")
         }
-        let close = event("core", "clos")
-        close.setParam(
-            Self.specifier(want: "cwin", form: "ID  ", key: NSAppleEventDescriptor(string: id), container: .null()),
-            forKeyword: keyDirectObject
-        )
-        _ = try send(close)
+        return specifier(want: "cwin", form: "ID  ", key: NSAppleEventDescriptor(string: id), container: .null())
     }
 
     private func event(_ eventClass: String, _ eventID: String) -> NSAppleEventDescriptor {

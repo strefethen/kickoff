@@ -74,6 +74,14 @@ final class ChromeLayoutTests: XCTestCase {
 
         var closeFailure: Error?
 
+        private(set) var loadedURLs: [(url: String, windowID: String)] = []
+        var loadFailure: ChromeScriptingFailure?
+
+        func loadURL(_ url: String, inWindow id: String) throws {
+            loadedURLs.append((url, id))
+            if let loadFailure { throw loadFailure }
+        }
+
         func closeWindow(id: String) throws {
             closedScriptIDs.append(id)
             if let closeFailure { throw closeFailure }
@@ -313,6 +321,48 @@ final class ChromeLayoutTests: XCTestCase {
         XCTAssertEqual(chrome.presses, 0)
         XCTAssertEqual(chrome.setAttributes, [])
         XCTAssertEqual(chrome.closedScriptIDs, [])
+    }
+
+    func testWebsiteLoadsThroughScriptingIntoTheOwnedWindowWithoutFocusOrKeys() throws {
+        let chrome = FakeChrome()
+        let expected = CGRect(x: 0, y: 25, width: 1920, height: 1055)
+        chrome.windowReads = [[], [chrome.window]]
+        chrome.frameReads = [expected]
+        chrome.inspectedNodes = [pageNode(chrome.leftPage)]
+        let (layout, _) = try makeLayout(chrome: chrome, ownsWindow: false)
+
+        try layout.prepare(frame: expected)
+        try layout.browseActiveWebsite(expectedPages: 1)
+
+        XCTAssertEqual(chrome.loadedURLs.map(\.url), [WebsiteURL.approvedDefault.absoluteString])
+        XCTAssertEqual(chrome.loadedURLs.map(\.windowID), ["7001"])
+        XCTAssertFalse(chrome.setAttributes.contains(kAXFrontmostAttribute))
+        XCTAssertFalse(chrome.setAttributes.contains(kAXFocusedAttribute))
+        XCTAssertEqual(chrome.performedActions, [])
+    }
+
+    func testWebsiteLoadFailureKeepsItsScriptingCause() throws {
+        let chrome = FakeChrome()
+        let expected = CGRect(x: 0, y: 25, width: 1920, height: 1055)
+        chrome.windowReads = [[], [chrome.window]]
+        chrome.frameReads = [expected]
+        chrome.inspectedNodes = [pageNode(chrome.leftPage)]
+        chrome.loadFailure = .from(errorNumber: -1743, message: "denied")
+        let (layout, _) = try makeLayout(chrome: chrome, ownsWindow: false)
+
+        try layout.prepare(frame: expected)
+        XCTAssertThrowsError(try layout.browseActiveWebsite(expectedPages: 1)) { error in
+            XCTAssertEqual((error as? ChromeScriptingFailure)?.kind, .notPermitted)
+        }
+    }
+
+    func testWebsiteIsNeverLoadedWithoutAWindowKickoffRequested() throws {
+        let chrome = FakeChrome()
+        chrome.inspectedNodes = [pageNode(chrome.leftPage)]
+        let (layout, _) = try makeLayout(chrome: chrome, ownsWindow: false)
+
+        XCTAssertThrowsError(try layout.browseActiveWebsite(expectedPages: 1))
+        XCTAssertTrue(chrome.loadedURLs.isEmpty)
     }
 
     func testAutomationDenialSurvivesStepWrappingAndIsNotRetryable() throws {
@@ -677,43 +727,6 @@ final class ChromeLayoutTests: XCTestCase {
 
         XCTAssertEqual(chrome.performedActions.filter { $0 == kAXRaiseAction }, [kAXRaiseAction])
         XCTAssertEqual(clock.sleeps, [])
-    }
-
-    func testSetupWindowAlreadyFocusedIsNotRaisedBeforeSubmission() throws {
-        let chrome = FakeChrome()
-        let expected = CGRect(x: 0, y: 25, width: 1920, height: 1055)
-        chrome.windowReads = [[], [chrome.window]]
-        chrome.frameReads = [expected]
-        chrome.inspectedNodes = [pageNode(chrome.leftPage)]
-        chrome.mainWindow = chrome.window
-        chrome.focusedWindow = chrome.window
-        let (layout, _) = try makeLayout(chrome: chrome)
-
-        try layout.prepare(frame: expected)
-        try layout.focusOwnedWindowForSubmission()
-
-        XCTAssertFalse(chrome.performedActions.contains(kAXRaiseAction))
-    }
-
-    func testSetupWindowThatLostFocusIsRaisedBeforeSubmission() throws {
-        let chrome = FakeChrome()
-        let expected = CGRect(x: 0, y: 25, width: 1920, height: 1055)
-        chrome.windowReads = [[], [chrome.window]]
-        chrome.frameReads = [expected]
-        chrome.inspectedNodes = [pageNode(chrome.leftPage)]
-        chrome.mainWindow = chrome.replacementWindow
-        chrome.focusedWindow = chrome.replacementWindow
-        chrome.onPerform = { action in
-            guard action == kAXRaiseAction else { return }
-            chrome.mainWindow = chrome.window
-            chrome.focusedWindow = chrome.window
-        }
-        let (layout, _) = try makeLayout(chrome: chrome)
-
-        try layout.prepare(frame: expected)
-        try layout.focusOwnedWindowForSubmission()
-
-        XCTAssertEqual(chrome.performedActions.filter { $0 == kAXRaiseAction }, [kAXRaiseAction])
     }
 
     func testRaiseRequiresOwnedWindowAndNeverAdoptsExistingWindow() throws {
